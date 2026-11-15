@@ -43,7 +43,7 @@ public class SecurityConfig {
     PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
 
     @Bean
-    CorsConfigurationSource corsSource(@Value("${app.cors.origins}") String origins) {
+    CorsConfigurationSource corsConfigurationSource(@Value("${app.cors.origins}") String origins) {
         CorsConfiguration c = new CorsConfiguration();
         c.setAllowedOrigins(Arrays.stream(origins.split(",")).map(String::trim).toList());
         c.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
