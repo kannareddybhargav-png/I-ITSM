@@ -24,34 +24,62 @@ function Countdown({ deadline, stopped, violated }) {
 }
 
 /* ---------------- login ---------------- */
+const ROLES = [
+  { key: 'EMPLOYEE', title: 'Employee', blurb: 'Report IT problems and track their progress.' },
+  { key: 'TECHNICIAN', title: 'Technician', blurb: 'Investigate and resolve the incidents assigned to you.' },
+  { key: 'ADMIN', title: 'Administrator', blurb: 'Manage users, SLA policies and technician assignment.' },
+];
+
 function Login({ onAuth }) {
+  const [role, setRole] = useState(null);
   const [mode, setMode] = useState('login');
   const [f, setF] = useState({ name: '', email: '', password: '' });
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const choose = (r) => { setRole(r); setMode('login'); setErr(''); setF({ name: '', email: '', password: '' }); };
   const submit = async (e) => {
     e.preventDefault();
     setErr('');
     try {
       if (mode === 'register') await api('/api/auth/register', { method: 'POST', body: f });
       const r = await api('/api/auth/login', { method: 'POST', body: { email: f.email, password: f.password } });
+      if (r.user.role !== role.key) throw new Error(`This account is not a ${role.title.toLowerCase()} account. Go back and choose the right user type.`);
       localStorage.setItem('token', r.token);
       localStorage.setItem('user', JSON.stringify(r.user));
       onAuth(r.user);
     } catch (x) { setErr(x.message); }
   };
+
+  if (!role) {
+    return (
+      <div className="landing">
+        <h1>I-ITSM Service Desk</h1>
+        <p className="muted">Choose how you want to sign in</p>
+        <div className="role-grid">
+          {ROLES.map((r) => (
+            <button key={r.key} className="role-card" onClick={() => choose(r)}><b>{r.title}</b><span>{r.blurb}</span></button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const canRegister = role.key === 'EMPLOYEE';
   return (
     <form className="panel login" onSubmit={submit}>
-      <h2>{mode === 'login' ? 'Sign in to the service desk' : 'Create an employee account'}</h2>
+      <h2>{role.title} {mode === 'login' ? 'sign in' : 'sign up'}</h2>
       {mode === 'register' && <label>Full name<input required value={f.name} onChange={set('name')} /></label>}
       <label>Email<input required type="email" value={f.email} onChange={set('email')} /></label>
       <label>Password<input required type="password" minLength={6} value={f.password} onChange={set('password')} /></label>
+      {!canRegister && <p className="muted">{role.title} accounts are created by an administrator.</p>}
       {err && <div className="error">{err}</div>}
       <div className="actions">
-        <button className="btn">{mode === 'login' ? 'Sign in' : 'Register'}</button>
-        <button type="button" className="btn alt" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
-          {mode === 'login' ? 'Create account' : 'I already have an account'}
-        </button>
+        <button className="btn">{mode === 'login' ? 'Sign in' : 'Create account'}</button>
+        {canRegister && (
+          <button type="button" className="btn alt" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setErr(''); }}>
+            {mode === 'login' ? 'Sign up instead' : 'I already have an account'}
+          </button>
+        )}
+        <button type="button" className="btn alt" onClick={() => setRole(null)}>Change user type</button>
       </div>
     </form>
   );
