@@ -26,15 +26,14 @@ public final class Dtos {
     public record CreateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
                                         @NotNull Long categoryId, @NotNull Long serviceId,
-                                        @Min(1) int affectedUsers,
-                                        @Min(1) @Max(5) int impact, @Min(1) @Max(5) int urgency) {}
+                                        @Min(1) @Max(5) int urgency) {}
     public record UpdateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
-                                        @Min(1) int affectedUsers,
-                                        @Min(1) @Max(5) int impact, @Min(1) @Max(5) int urgency) {}
+                                        @Min(1) @Max(5) int urgency) {}
     public record TextRequest(@NotBlank @Size(max = 2000) String text) {}
     public record AssignRequest(Long technicianId) {}
-    public record NameRequest(@NotBlank String name) {}
+    public record CategoryRequest(@NotBlank String name, @Min(1) @Max(5) int criticality) {}
+    public record WeightRequest(@Min(1) @Max(5) int weight) {}
     public record ServiceRequest(@NotBlank String name, @Min(1) @Max(5) int criticality) {}
     public record SlaUpdateRequest(@Min(1) int responseMinutes, @Min(1) int resolutionMinutes) {}
     public record StrategyRequest(@NotBlank String strategy) {}
@@ -51,20 +50,22 @@ public final class Dtos {
     }
 
     public record IncidentDto(Long id, String title, String description, Long categoryId, String category,
-                              Long serviceId, String service, int affectedUsers, int impact, int urgency, int score,
+                              Long serviceId, String service, int impact, int urgency, Integer criticality, int score,
                               Priority priority, IncidentStatus status, Long reporterId, String reporter,
                               Long technicianId, String technician, Instant createdAt, Instant acknowledgedAt,
                               Instant resolvedAt, Instant responseDeadline, Instant resolutionDeadline,
-                              boolean responseViolated, boolean resolutionViolated, String resolution) {
+                              boolean responseViolated, boolean resolutionViolated, String resolution,
+                              Long duplicateOfId, int escalationLevel) {
         public static IncidentDto from(Incident i) {
             User t = i.getTechnician();
             return new IncidentDto(i.getId(), i.getTitle(), i.getDescription(),
                     i.getCategory().getId(), i.getCategory().getName(), i.getService().getId(), i.getService().getName(),
-                    i.getAffectedUsers(), i.getImpact(), i.getUrgency(), i.getScore(), i.getPriority(), i.getStatus(),
+                    i.getImpact(), i.getUrgency(), i.getCriticality(), i.getScore(), i.getPriority(), i.getStatus(),
                     i.getReporter().getId(), i.getReporter().getName(),
                     t == null ? null : t.getId(), t == null ? null : t.getName(),
                     i.getCreatedAt(), i.getAcknowledgedAt(), i.getResolvedAt(), i.getResponseDeadline(),
-                    i.getResolutionDeadline(), i.isResponseViolated(), i.isResolutionViolated(), i.getResolution());
+                    i.getResolutionDeadline(), i.isResponseViolated(), i.isResolutionViolated(), i.getResolution(),
+                    i.getDuplicateOfId(), i.getEscalationLevel() == null ? 0 : i.getEscalationLevel());
         }
     }
 }

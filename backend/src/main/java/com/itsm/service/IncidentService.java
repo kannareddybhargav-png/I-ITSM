@@ -14,11 +14,13 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static com.itsm.entity.IncidentStatus.*;
 
@@ -34,6 +36,7 @@ public class IncidentService {
     private final PriorityStrategy priorityStrategy;
     private final AssignmentService assignment;
     private final SlaService sla;
+    private final DuplicateDetector duplicates;
     private final ApplicationEventPublisher events;
 
     public record Filter(IncidentStatus status, Priority priority, Long categoryId, Long serviceId,
@@ -74,7 +77,11 @@ public class IncidentService {
     private void log(Incident i, String action, User actor, String desc) {
         events.publishEvent(new IncidentEvent(i, action, i.getStatus(), i.getStatus(), actor, desc));
     }
+    /** Impact = weight of the affected service, criticality = weight of the category (both admin-editable). */
     private void prioritize(Incident i) {
+        i.setImpact(i.getService().getCriticality());
+        Integer weight = i.getCategory().getCriticality();
+        i.setCriticality(weight == null ? 3 : weight);
         int score = priorityStrategy.score(i);
         i.setScore(score);
         i.setPriority(priorityStrategy.classify(score));
@@ -126,8 +133,6 @@ public class IncidentService {
         i.setDescription(r.description().trim());
         i.setCategory(c);
         i.setService(s);
-        i.setAffectedUsers(r.affectedUsers());
-        i.setImpact(r.impact());
         i.setUrgency(r.urgency());
         i.setReporter(me);
         i.setCreatedAt(Instant.now());
@@ -137,11 +142,32 @@ public class IncidentService {
 
         move(i, CLASSIFIED, "CLASSIFIED", null, "Category: " + c.getName() + ", service: " + s.getName());
         prioritize(i);
-        move(i, PRIORITIZED, "PRIORITIZED", null, "Score " + i.getScore() + " -> " + i.getPriority());
-        assignment.pick(i).ifPresent(t -> {
+        move(i, PRIORITIZED, "PRIORITIZED", null, "Service impact " + i.getImpact() + " x category criticality "
+                + i.getCriticality() + " x urgency " + i.getUrgency() + " = " + i.getScore() + " -> " + i.getPriority());
+
+        // Duplicate detection against incidents that are still open and were reported in the last 48 hours.
+        List<DuplicateDetector.Match> matches = duplicates.findSimilar(i,
+                incidents.findByStatusNotInAndCreatedAtAfter(List.of(VERIFIED, CLOSED), Instant.now().minus(Duration.ofHours(48))));
+        Incident original = matches.isEmpty() ? null : matches.get(0).incident();
+        i.setDuplicateOfId(original == null ? null : original.getId());
+
+        // A technician already working on the original is preferred; otherwise the active strategy decides.
+        User preferred = (original != null && original.getTechnician() != null && original.getTechnician().isAvailable())
+                ? original.getTechnician() : null;
+        String how = preferred != null ? "(same technician as possible duplicate #" + original.getId() + ")"
+                : "using " + assignment.getActive();
+        Optional<User> chosen = preferred != null ? Optional.of(preferred) : assignment.pick(i);
+        chosen.ifPresent(t -> {
             i.setTechnician(t);
-            move(i, ASSIGNED, "ASSIGNED", null, "Auto-assigned to " + t.getName() + " using " + assignment.getActive());
+            move(i, ASSIGNED, "ASSIGNED", null, "Auto-assigned to " + t.getName() + " " + how);
         });
+
+        if (original != null) {
+            incidents.save(i);
+            int pct = (int) Math.round(matches.get(0).similarity() * 100);
+            log(i, "DUPLICATE_DETECTED", null, "Possible duplicate of #" + original.getId() + " (" + pct + "% keyword overlap"
+                    + (matches.size() > 1 ? ", " + (matches.size() - 1) + " more similar open incident(s)" : "") + ")");
+        }
         return IncidentDto.from(i);
     }
 
@@ -152,8 +178,6 @@ public class IncidentService {
             throw conflict("Incident can no longer be edited");
         i.setTitle(r.title().trim());
         i.setDescription(r.description().trim());
-        i.setAffectedUsers(r.affectedUsers());
-        i.setImpact(r.impact());
         i.setUrgency(r.urgency());
         Priority before = i.getPriority();
         prioritize(i);
@@ -246,5 +270,54 @@ public class IncidentService {
         requireReporterOrAdmin(i, me);
         move(i, CLOSED, "CLOSED", me, "Incident closed");
         return IncidentDto.from(i);
+    }
+
+    @Transactional(readOnly = true)
+    public List<IncidentDto> related(Long id, User me) {
+        if (me.getRole() == Role.EMPLOYEE) throw forbidden("Related incidents are visible to technicians and administrators");
+        Incident i = find(id);
+        checkAccess(i, me);
+        List<Incident> out = new java.util.ArrayList<>();
+        if (i.getDuplicateOfId() != null) incidents.findById(i.getDuplicateOfId()).ifPresent(out::add);
+        out.addAll(incidents.findByDuplicateOfId(id));
+        return out.stream().map(IncidentDto::from).toList();
+    }
+
+    private static final List<Priority> ESCALATING = List.of(Priority.P1, Priority.P2);
+
+    /**
+     * Automatic escalation of unacknowledged P1/P2 incidents (called by the scheduler).
+     * Level 1: response deadline passed -> administrators are alerted.
+     * Level 2: a further full response window passed -> escalated to IT management and reassigned to another technician.
+     */
+    public void checkEscalations() {
+        Instant now = Instant.now();
+        for (Incident i : incidents.findByAcknowledgedAtIsNullAndPriorityInAndStatusIn(ESCALATING, List.of(PRIORITIZED, ASSIGNED))) {
+            if (i.getResponseDeadline() == null) continue;
+            long window = Duration.between(i.getCreatedAt(), i.getResponseDeadline()).toMillis();
+            long overdue = Duration.between(i.getResponseDeadline(), now).toMillis();
+            int level = overdue < 0 ? 0 : (overdue < window ? 1 : 2);
+            int current = i.getEscalationLevel() == null ? 0 : i.getEscalationLevel();
+            if (level <= current) continue;
+            i.setEscalationLevel(level);
+            if (level == 1) {
+                incidents.save(i);
+                log(i, "ESCALATED_L1", null, "Not acknowledged in time: escalated to administrators");
+                continue;
+            }
+            String d = "Still not acknowledged: escalated to IT management";
+            Long excluded = i.getTechnician() == null ? null : i.getTechnician().getId();
+            Optional<User> next = assignment.pickExcluding(i, excluded);
+            if (next.isPresent()) {
+                i.setTechnician(next.get());
+                d += "; reassigned to " + next.get().getName();
+            }
+            if (next.isPresent() && i.getStatus() == PRIORITIZED) {
+                move(i, ASSIGNED, "ESCALATED_L2", null, d);
+            } else {
+                incidents.save(i);
+                log(i, "ESCALATED_L2", null, d);
+            }
+        }
     }
 }

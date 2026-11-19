@@ -8,7 +8,11 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class SlaMonitor {
     private final SlaService sla;
+    private final IncidentService incidentService;
 
     @Scheduled(fixedDelay = 30_000, initialDelay = 15_000)
-    public void run() { sla.checkViolations(); }
+    public void run() {
+        sla.checkViolations();
+        incidentService.checkEscalations();
+    }
 }

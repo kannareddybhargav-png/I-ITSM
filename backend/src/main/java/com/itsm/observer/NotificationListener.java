@@ -42,8 +42,16 @@ public class NotificationListener {
                 if (tech != null) to.add(tech);
                 send(to, "SLA_VIOLATION", ref + ": " + e.description());
             }
+            case "DUPLICATE_DETECTED" -> send(adminsAnd(tech), "DUPLICATE_DETECTED", ref + ": " + e.description());
+            case "ESCALATED_L1", "ESCALATED_L2" -> send(adminsAnd(tech), "ESCALATION", ref + ": " + e.description());
             default -> { }
         }
+    }
+
+    private List<User> adminsAnd(User tech) {
+        List<User> to = new ArrayList<>(users.findByRole(Role.ADMIN));
+        if (tech != null) to.add(tech);
+        return to;
     }
 
     private void send(List<User> recipients, String type, String message) {

@@ -14,7 +14,8 @@ class CoreLogicTests {
         Incident i = new Incident();
         i.setImpact(impact);
         i.setUrgency(urgency);
-        i.setService(new ItService("svc", criticality));
+        i.setCriticality(criticality);
+        i.setService(new ItService("svc", 3));
         i.setCategory(new Category(category));
         return i;
     }

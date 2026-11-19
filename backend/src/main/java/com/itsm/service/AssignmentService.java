@@ -36,6 +36,16 @@ public class AssignmentService {
         return strategies.get(active).select(incident, available, load);
     }
 
+    /** Used by escalation: next best technician other than the current one (skill match first, then least loaded). */
+    public Optional<User> pickExcluding(Incident incident, Long excludeId) {
+        List<User> available = users.findByRoleAndAvailableTrue(Role.TECHNICIAN).stream()
+                .filter(u -> !u.getId().equals(excludeId)).toList();
+        Map<Long, Long> load = new HashMap<>();
+        available.forEach(u -> load.put(u.getId(), workload(u.getId())));
+        Optional<User> skilled = strategies.get("SKILL_BASED").select(incident, available, load);
+        return skilled.isPresent() ? skilled : strategies.get("LOAD_BASED").select(incident, available, load);
+    }
+
     public long workload(Long technicianId) {
         return incidents.countByTechnicianIdAndStatusIn(technicianId, ACTIVE);
     }

@@ -13,7 +13,7 @@ public class ItService {
     private Long id;
     @Column(nullable = false, unique = true)
     private String name;
-    /** Business criticality 1 (low) .. 5 (critical). */
+    /** Impact weight 1 (low) .. 5 (severe) of this service, editable by admins. Used as the incident impact. */
     private int criticality;
     public ItService(String name, int criticality) { this.name = name; this.criticality = criticality; }
 }

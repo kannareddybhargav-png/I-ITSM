@@ -5,14 +5,16 @@ import com.itsm.entity.Priority;
 import org.springframework.stereotype.Component;
 
 /**
- * Score = impact (1-5) x urgency (1-5) x service criticality (1-5), range 1..125.
+ * Score = impact (weight of the affected service) x business criticality (weight of the category)
+ * x urgency (chosen by the employee). Each factor is 1..5, so the score is 1..125.
  * Thresholds: P1 >= 75, P2 >= 40, P3 >= 15, otherwise P4.
  */
 @Component
 public class ScorePriorityStrategy implements PriorityStrategy {
     @Override
     public int score(Incident i) {
-        return i.getImpact() * i.getUrgency() * i.getService().getCriticality();
+        int criticality = i.getCriticality() != null ? i.getCriticality() : 3;
+        return i.getImpact() * i.getUrgency() * criticality;
     }
     @Override
     public Priority classify(int score) {

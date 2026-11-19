@@ -35,4 +35,9 @@ public class Incident {
     private boolean resolutionViolated;
     @Column(length = 2000)
     private String resolution;
+    /** Category criticality weight used when the priority was calculated. */
+    private Integer criticality;
+    /** Id of the earlier open incident this one looks like (duplicate detection). */
+    private Long duplicateOfId;
+    private Integer escalationLevel;
 }

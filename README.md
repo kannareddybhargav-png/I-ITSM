@@ -24,7 +24,9 @@ Frontend: `VITE_API_URL` = backend base URL.
 admin@iitsm.com / Admin@123, employee@iitsm.com / Employee@123, tech1..3@iitsm.com / Tech@123
 
 ## Design decisions
-- Priority score = impact x urgency x service criticality (1-125). P1 >= 75, P2 >= 40, P3 >= 15, else P4.
+- Priority score = service impact weight x category criticality weight x urgency (each 1-5, so 1-125). Only urgency is chosen by the employee; admins edit the service and category weights. P1 >= 75, P2 >= 40, P3 >= 15, else P4.
+- Duplicate detection: an open incident from the last 48 hours is a possible duplicate when it affects the same service and shares a keyword, or is in the same category and shares two keywords. The new incident is linked, admins and the technician are notified, and the technician already handling the original is preferred.
+- Escalation (checked every 30 s, P1 and P2 only): level 1 when the response deadline passes without acknowledgement (administrators alerted), level 2 after a second response window (escalated to IT management and reassigned to another available technician).
 - SLA clock runs 24x7 from creation. Defaults (minutes, response/resolution): P1 5/30, P2 15/120, P3 60/480, P4 240/1440. Editable by admin.
 - Assignment strategies (admin selectable): SKILL_BASED and LOAD_BASED. If no technician fits, the incident stays PRIORITIZED for manual assignment.
 - Patterns: Strategy (priority, assignment), State (`IncidentStatus` transitions), Observer (`IncidentEvent` -> audit + notification listeners).

@@ -48,6 +48,9 @@ public class IncidentController {
     @GetMapping("/{id}/history")
     public List<AuditDto> history(@PathVariable Long id, @AuthenticationPrincipal User me) { return svc.history(id, me); }
 
+    @GetMapping("/{id}/related")
+    public List<IncidentDto> related(@PathVariable Long id, @AuthenticationPrincipal User me) { return svc.related(id, me); }
+
     @PutMapping("/{id}")
     @PreAuthorize("hasAnyRole('EMPLOYEE','ADMIN')")
     public IncidentDto update(@PathVariable Long id, @Valid @RequestBody UpdateIncidentRequest r, @AuthenticationPrincipal User me) {

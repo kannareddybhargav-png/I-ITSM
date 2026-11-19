@@ -69,9 +69,9 @@ public class AdminController {
     @PostMapping("/api/categories")
     @ResponseStatus(HttpStatus.CREATED)
     @PreAuthorize("hasRole('ADMIN')")
-    public Category addCategory(@Valid @RequestBody NameRequest r) {
+    public Category addCategory(@Valid @RequestBody CategoryRequest r) {
         if (categories.existsByNameIgnoreCase(r.name().trim())) throw new ApiException(HttpStatus.CONFLICT, "Category already exists");
-        return categories.save(new Category(r.name().trim()));
+        return categories.save(new Category(r.name().trim(), r.criticality()));
     }
 
     @GetMapping("/api/services")
@@ -83,6 +83,22 @@ public class AdminController {
     public ItService addService(@Valid @RequestBody ServiceRequest r) {
         if (services.existsByNameIgnoreCase(r.name().trim())) throw new ApiException(HttpStatus.CONFLICT, "Service already exists");
         return services.save(new ItService(r.name().trim(), r.criticality()));
+    }
+
+    @PutMapping("/api/categories/{id}/weight")
+    @PreAuthorize("hasRole('ADMIN')")
+    public Category categoryWeight(@PathVariable Long id, @Valid @RequestBody WeightRequest r) {
+        Category c = categories.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Category not found"));
+        c.setCriticality(r.weight());
+        return categories.save(c);
+    }
+
+    @PutMapping("/api/services/{id}/weight")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ItService serviceWeight(@PathVariable Long id, @Valid @RequestBody WeightRequest r) {
+        ItService s = services.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Service not found"));
+        s.setCriticality(r.weight());
+        return services.save(s);
     }
 
     // ----- SLA -----
