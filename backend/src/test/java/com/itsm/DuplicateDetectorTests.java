@@ -29,6 +29,12 @@ class DuplicateDetectorTests {
         Incident c = inc(103, "Payment transaction failing", 1, 1);
         assertEquals(2, detector.findSimilar(c, List.of(a, b)).size());
     }
+    @Test void identicalShortTitlesAreFlagged() {
+        assertEquals(1, detector.findSimilar(inc(4, "db", 3, 5), List.of(inc(3, "db", 3, 5))).size());
+    }
+    @Test void shortKeywordsLikeDbCount() {
+        assertEquals(1, detector.findSimilar(inc(2, "db is slow", 3, 5), List.of(inc(1, "db down", 3, 5))).size());
+    }
     @Test void incidentIsNotMatchedAgainstItself() {
         Incident a = inc(1, "VPN connection drops", 2, 2);
         assertTrue(detector.findSimilar(a, List.of(a)).isEmpty());

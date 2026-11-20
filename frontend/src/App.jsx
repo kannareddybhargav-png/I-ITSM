@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 
 const STATUSES = ['NEW', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'VERIFIED', 'CLOSED'];
@@ -114,14 +114,17 @@ function Login({ onAuth }) {
 function ReportForm({ meta, onDone }) {
   const [f, setF] = useState({ title: '', description: '', categoryId: '', serviceId: '', urgency: 3 });
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const submit = async (e) => {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     setErr('');
     try {
       const i = await api('/api/incidents', { method: 'POST', body: { ...f, categoryId: +f.categoryId, serviceId: +f.serviceId, urgency: +f.urgency } });
       onDone(i.id);
-    } catch (x) { setErr(x.message); }
+    } catch (x) { setErr(x.message); setBusy(false); }
   };
   return (
     <form className="card" onSubmit={submit}>
@@ -147,7 +150,7 @@ function ReportForm({ meta, onDone }) {
         </fieldset>
       </div>
       {err && <div className="error">{err}</div>}
-      <div className="actions"><button className="btn">Submit incident</button></div>
+      <div className="actions"><button className="btn" disabled={busy}>{busy ? 'Submitting, please wait…' : 'Submit incident'}</button></div>
     </form>
   );
 }
@@ -230,9 +233,13 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
     } catch (e) { setErr(e.message); }
   }, [id, user.role]);
   useEffect(() => { load(); }, [load, version]);
+  const busy = useRef(false);
   const act = async (path, body) => {
+    if (busy.current) return;
+    busy.current = true;
     try { setErr(''); await api(`/api/incidents/${id}/${path}`, { method: 'POST', body }); setText(''); await load(); onChanged(); }
     catch (e) { setErr(e.message); }
+    finally { busy.current = false; }
   };
   if (!i) return <div className="card">{err ? <div className="error">{err}</div> : 'Loading…'}</div>;
   const isTech = user.role === 'TECHNICIAN';
@@ -284,7 +291,7 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
             )}
           </div>
 
-          {i.criticality != null && (
+          {user.role !== 'TECHNICIAN' && i.criticality != null && (
             <div className="card">
               <h3>How the priority was decided</h3>
               <p className="sub">Impact comes from the affected service, criticality from the category, urgency from the reporter.</p>

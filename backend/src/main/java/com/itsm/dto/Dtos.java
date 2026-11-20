@@ -56,6 +56,15 @@ public final class Dtos {
                               Instant resolvedAt, Instant responseDeadline, Instant resolutionDeadline,
                               boolean responseViolated, boolean resolutionViolated, String resolution,
                               Long duplicateOfId, int escalationLevel) {
+        /** Technicians see the priority but not how it was calculated (impact, criticality, urgency, score). */
+        public IncidentDto forRole(Role role) {
+            if (role != Role.TECHNICIAN) return this;
+            return new IncidentDto(id, title, description, categoryId, category, serviceId, service, 0, 0, null, 0,
+                    priority, status, reporterId, reporter, technicianId, technician, createdAt, acknowledgedAt,
+                    resolvedAt, responseDeadline, resolutionDeadline, responseViolated, resolutionViolated, resolution,
+                    duplicateOfId, escalationLevel);
+        }
+
         public static IncidentDto from(Incident i) {
             User t = i.getTechnician();
             return new IncidentDto(i.getId(), i.getTitle(), i.getDescription(),

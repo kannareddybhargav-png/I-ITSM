@@ -46,6 +46,7 @@ public class IncidentService {
     private Incident find(Long id) {
         return incidents.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Incident not found"));
     }
+    private IncidentDto view(Incident i, User me) { return IncidentDto.from(i).forRole(me.getRole()); }
     private ApiException forbidden(String m) { return new ApiException(HttpStatus.FORBIDDEN, m); }
     private ApiException conflict(String m) { return new ApiException(HttpStatus.CONFLICT, m); }
 
@@ -108,29 +109,41 @@ public class IncidentService {
             if (f.from() != null) p.add(cb.greaterThanOrEqualTo(root.get("createdAt"), f.from().atStartOfDay(ZoneOffset.UTC).toInstant()));
             return cb.and(p.toArray(new Predicate[0]));
         };
-        return incidents.findAll(spec, Sort.by(Sort.Direction.DESC, "createdAt")).stream().map(IncidentDto::from).toList();
+        return incidents.findAll(spec, Sort.by(Sort.Direction.DESC, "createdAt")).stream().map(x -> view(x, me)).toList();
     }
 
     @Transactional(readOnly = true)
     public IncidentDto get(Long id, User me) {
         Incident i = find(id);
         checkAccess(i, me);
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     @Transactional(readOnly = true)
     public List<AuditDto> history(Long id, User me) {
-        checkAccess(find(id), me);
-        return audit.findByIncidentIdOrderByTimestampAsc(id).stream().map(AuditDto::from).toList();
+        Incident i = find(id);
+        checkAccess(i, me);
+        List<AuditDto> list = audit.findByIncidentIdOrderByTimestampAsc(id).stream().map(AuditDto::from).toList();
+        if (me.getRole() != Role.TECHNICIAN) return list;
+        // Technicians do not see how the priority was calculated.
+        return list.stream().map(a -> "PRIORITIZED".equals(a.action())
+                ? new AuditDto(a.action(), a.actor(), a.oldStatus(), a.newStatus(), "Priority calculated automatically: " + i.getPriority(), a.timestamp())
+                : a).toList();
     }
 
     // ---------- commands ----------
     public IncidentDto create(CreateIncidentRequest r, User me) {
         Category c = categories.findById(r.categoryId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Unknown category"));
         ItService s = services.findById(r.serviceId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Unknown IT service"));
+        String title = r.title().trim();
+        String desc = r.description().trim();
+        // Guard against double submits: the same reporter sending the same text within 10 seconds gets the existing incident.
+        Optional<Incident> recent = incidents.findFirstByReporterIdAndTitleAndDescriptionAndCreatedAtAfter(
+                me.getId(), title, desc, Instant.now().minusSeconds(10));
+        if (recent.isPresent()) return view(recent.get(), me);
         Incident i = new Incident();
-        i.setTitle(r.title().trim());
-        i.setDescription(r.description().trim());
+        i.setTitle(title);
+        i.setDescription(desc);
         i.setCategory(c);
         i.setService(s);
         i.setUrgency(r.urgency());
@@ -168,7 +181,7 @@ public class IncidentService {
             log(i, "DUPLICATE_DETECTED", null, "Possible duplicate of #" + original.getId() + " (" + pct + "% keyword overlap"
                     + (matches.size() > 1 ? ", " + (matches.size() - 1) + " more similar open incident(s)" : "") + ")");
         }
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto update(Long id, UpdateIncidentRequest r, User me) {
@@ -184,7 +197,7 @@ public class IncidentService {
         incidents.save(i);
         log(i, "UPDATED", me, "Incident details updated");
         if (before != i.getPriority()) log(i, "PRIORITY_CHANGED", me, before + " -> " + i.getPriority());
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public void delete(Long id, User me) {
@@ -210,7 +223,7 @@ public class IncidentService {
         String d = "Assigned to " + tech.getName() + (technicianId == null ? " using " + assignment.getActive() : " manually");
         if (reassign) { incidents.save(i); log(i, "REASSIGNED", me, d); }
         else move(i, ASSIGNED, "ASSIGNED", me, d);
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto acknowledge(Long id, User me) {
@@ -220,14 +233,14 @@ public class IncidentService {
         i.setAcknowledgedAt(now);
         if (i.getResponseDeadline() != null && now.isAfter(i.getResponseDeadline())) i.setResponseViolated(true);
         move(i, ACKNOWLEDGED, "ACKNOWLEDGED", me, "Technician acknowledged the incident");
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto start(Long id, User me) {
         Incident i = find(id);
         requireAssignedTech(i, me);
         move(i, IN_PROGRESS, "INVESTIGATION_STARTED", me, "Investigation started");
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto addNote(Long id, String text, User me) {
@@ -236,7 +249,7 @@ public class IncidentService {
         if (i.getStatus() == ACKNOWLEDGED) move(i, IN_PROGRESS, "INVESTIGATION_STARTED", me, "Investigation started");
         else if (i.getStatus() != IN_PROGRESS) throw conflict("Notes can only be added while investigating");
         log(i, "NOTE_ADDED", me, text);
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto resolve(Long id, String text, User me) {
@@ -247,14 +260,14 @@ public class IncidentService {
         i.setResolvedAt(now);
         if (i.getResolutionDeadline() != null && now.isAfter(i.getResolutionDeadline())) i.setResolutionViolated(true);
         move(i, RESOLVED, "RESOLVED", me, "Resolution: " + text);
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto verify(Long id, User me) {
         Incident i = find(id);
         requireReporterOrAdmin(i, me);
         move(i, VERIFIED, "VERIFIED", me, "Resolution verified");
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto reopen(Long id, User me) {
@@ -262,14 +275,14 @@ public class IncidentService {
         requireReporterOrAdmin(i, me);
         i.setResolvedAt(null);
         move(i, IN_PROGRESS, "REOPENED", me, "Resolution rejected, incident reopened");
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     public IncidentDto close(Long id, User me) {
         Incident i = find(id);
         requireReporterOrAdmin(i, me);
         move(i, CLOSED, "CLOSED", me, "Incident closed");
-        return IncidentDto.from(i);
+        return view(i, me);
     }
 
     @Transactional(readOnly = true)
@@ -280,7 +293,7 @@ public class IncidentService {
         List<Incident> out = new java.util.ArrayList<>();
         if (i.getDuplicateOfId() != null) incidents.findById(i.getDuplicateOfId()).ifPresent(out::add);
         out.addAll(incidents.findByDuplicateOfId(id));
-        return out.stream().map(IncidentDto::from).toList();
+        return out.stream().map(x -> view(x, me)).toList();
     }
 
     private static final List<Priority> ESCALATING = List.of(Priority.P1, Priority.P2);

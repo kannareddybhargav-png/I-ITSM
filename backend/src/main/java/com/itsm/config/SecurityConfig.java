@@ -33,7 +33,7 @@ public class SecurityConfig {
         http.csrf(c -> c.disable())
             .cors(Customizer.withDefaults())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(a -> a.requestMatchers("/api/auth/**", "/api/health").permitAll().anyRequest().authenticated())
+            .authorizeHttpRequests(a -> a.requestMatchers("/api/auth/**", "/api/health", "/error").permitAll().anyRequest().authenticated())
             .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.sendError(401, "Unauthorized")))
             .addFilterBefore(new JwtFilter(jwtService, users), UsernamePasswordAuthenticationFilter.class);
         return http.build();
