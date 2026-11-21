@@ -38,8 +38,9 @@ public class IncidentController {
                                     @RequestParam(required = false) Long reporterId,
                                     @RequestParam(required = false) String q,
                                     @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+                                    @RequestParam(required = false) String scope,
                                     @AuthenticationPrincipal User me) {
-        return svc.search(new Filter(status, priority, categoryId, serviceId, technicianId, reporterId, q, from), me);
+        return svc.search(new Filter(status, priority, categoryId, serviceId, technicianId, reporterId, q, from, scope), me);
     }
 
     @GetMapping("/{id}")

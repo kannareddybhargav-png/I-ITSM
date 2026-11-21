@@ -40,13 +40,17 @@ public class IncidentService {
     private final ApplicationEventPublisher events;
 
     public record Filter(IncidentStatus status, Priority priority, Long categoryId, Long serviceId,
-                         Long technicianId, Long reporterId, String q, LocalDate from) {}
+                         Long technicianId, Long reporterId, String q, LocalDate from, String scope) {}
 
     // ---------- helpers ----------
     private Incident find(Long id) {
         return incidents.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Incident not found"));
     }
-    private IncidentDto view(Incident i, User me) { return IncidentDto.from(i).forRole(me.getRole()); }
+    private IncidentDto view(Incident i, User me) {
+        String dupRef = i.getDuplicateOfId() == null ? null
+                : incidents.findById(i.getDuplicateOfId()).map(Incident::getReference).orElse(null);
+        return IncidentDto.from(i, dupRef).forRole(me.getRole());
+    }
     private ApiException forbidden(String m) { return new ApiException(HttpStatus.FORBIDDEN, m); }
     private ApiException conflict(String m) { return new ApiException(HttpStatus.CONFLICT, m); }
 
@@ -54,7 +58,7 @@ public class IncidentService {
         boolean ok = switch (me.getRole()) {
             case ADMIN -> true;
             case EMPLOYEE -> i.getReporter().getId().equals(me.getId());
-            case TECHNICIAN -> i.getTechnician() != null && i.getTechnician().getId().equals(me.getId());
+            case TECHNICIAN -> true; // technicians may read every incident; only the assigned one can act on it
         };
         if (!ok) throw forbidden("You do not have access to this incident");
     }
@@ -90,19 +94,35 @@ public class IncidentService {
     }
 
     // ---------- queries ----------
+    private static final java.util.regex.Pattern REF =
+            java.util.regex.Pattern.compile("(?i)inc-(?:p\\d-)?0*(\\d+)(?:-d(\\d+))?");
+
     @Transactional(readOnly = true)
     public List<IncidentDto> search(Filter f, User me) {
         Specification<Incident> spec = (root, query, cb) -> {
             List<Predicate> p = new ArrayList<>();
-            if (me.getRole() == Role.EMPLOYEE) p.add(cb.equal(root.get("reporter").get("id"), me.getId()));
-            if (me.getRole() == Role.TECHNICIAN) p.add(cb.equal(root.get("technician").get("id"), me.getId()));
+            boolean all = "all".equalsIgnoreCase(f.scope());
+            boolean mine = "mine".equalsIgnoreCase(f.scope());
+            switch (me.getRole()) {
+                // Employees only ever see the incidents they reported.
+                case EMPLOYEE -> p.add(cb.equal(root.get("reporter").get("id"), me.getId()));
+                // Technician: "mine" (default) = every incident assigned to me, past and present; "all" = everything.
+                case TECHNICIAN -> { if (!all) p.add(cb.equal(root.get("technician").get("id"), me.getId())); }
+                // Administrator: "mine" = incidents I reported; "all" (default) = everything.
+                case ADMIN -> { if (mine) p.add(cb.equal(root.get("reporter").get("id"), me.getId())); }
+            }
             if (f.status() != null) p.add(cb.equal(root.get("status"), f.status()));
             if (f.priority() != null) p.add(cb.equal(root.get("priority"), f.priority()));
             if (f.categoryId() != null) p.add(cb.equal(root.get("category").get("id"), f.categoryId()));
             if (f.serviceId() != null) p.add(cb.equal(root.get("service").get("id"), f.serviceId()));
             if (f.technicianId() != null) p.add(cb.equal(root.get("technician").get("id"), f.technicianId()));
             if (f.reporterId() != null) p.add(cb.equal(root.get("reporter").get("id"), f.reporterId()));
-            if (f.q() != null && !f.q().isBlank()) {
+            java.util.regex.Matcher ref = f.q() == null ? null : REF.matcher(f.q().trim());
+            if (ref != null && ref.matches()) {
+                // Searching by reference, e.g. INC-P3-0003, INC-0003 or INC-P3-0003-D1.
+                p.add(cb.equal(root.get("refNumber"), Long.parseLong(ref.group(1))));
+                if (ref.group(2) != null) p.add(cb.equal(root.get("duplicateSeq"), Integer.parseInt(ref.group(2))));
+            } else if (f.q() != null && !f.q().isBlank()) {
                 String like = "%" + f.q().trim().toLowerCase() + "%";
                 p.add(cb.or(cb.like(cb.lower(root.get("title")), like), cb.like(cb.lower(root.get("description")), like)));
             }
@@ -133,6 +153,8 @@ public class IncidentService {
 
     // ---------- commands ----------
     public IncidentDto create(CreateIncidentRequest r, User me) {
+        if (me.getRole() == Role.EMPLOYEE && !me.isVerified())
+            throw forbidden("Your account is waiting for administrator verification. You can report incidents once it is verified.");
         Category c = categories.findById(r.categoryId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Unknown category"));
         ItService s = services.findById(r.serviceId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Unknown IT service"));
         String title = r.title().trim();
@@ -151,23 +173,33 @@ public class IncidentService {
         i.setCreatedAt(Instant.now());
         i.setStatus(NEW);
         incidents.save(i);
-        events.publishEvent(new IncidentEvent(i, "CREATED", null, NEW, me, "Incident reported: " + i.getTitle()));
-
-        move(i, CLASSIFIED, "CLASSIFIED", null, "Category: " + c.getName() + ", service: " + s.getName());
+        // Priority and duplicate link are worked out before any event is published, so every notification and
+        // history entry already carries the final reference (e.g. INC-P3-0003-D1).
         prioritize(i);
-        move(i, PRIORITIZED, "PRIORITIZED", null, "Service impact " + i.getImpact() + " x category criticality "
-                + i.getCriticality() + " x urgency " + i.getUrgency() + " = " + i.getScore() + " -> " + i.getPriority());
-
-        // Duplicate detection against incidents that are still open and were reported in the last 48 hours.
         List<DuplicateDetector.Match> matches = duplicates.findSimilar(i,
                 incidents.findByStatusNotInAndCreatedAtAfter(List.of(VERIFIED, CLOSED), Instant.now().minus(Duration.ofHours(48))));
         Incident original = matches.isEmpty() ? null : matches.get(0).incident();
-        i.setDuplicateOfId(original == null ? null : original.getId());
+        if (original == null) {
+            i.setRefNumber(i.getId());
+        } else {
+            // Duplicates share the base number of the first incident in the chain and get the next -D sequence.
+            Long base = original.getRefNumber() != null ? original.getRefNumber()
+                    : (original.getDuplicateOfId() != null ? original.getDuplicateOfId() : original.getId());
+            i.setDuplicateOfId(original.getId());
+            i.setRefNumber(base);
+            i.setDuplicateSeq((int) incidents.countByRefNumberAndDuplicateSeqNotNull(base) + 1);
+        }
+        incidents.save(i);
+
+        events.publishEvent(new IncidentEvent(i, "CREATED", null, NEW, me, "Incident reported: " + i.getTitle()));
+        move(i, CLASSIFIED, "CLASSIFIED", null, "Category: " + c.getName() + ", service: " + s.getName());
+        move(i, PRIORITIZED, "PRIORITIZED", null, "Service impact " + i.getImpact() + " x category criticality "
+                + i.getCriticality() + " x urgency " + i.getUrgency() + " = " + i.getScore() + " -> " + i.getPriority());
 
         // A technician already working on the original is preferred; otherwise the active strategy decides.
         User preferred = (original != null && original.getTechnician() != null && original.getTechnician().isAvailable())
                 ? original.getTechnician() : null;
-        String how = preferred != null ? "(same technician as possible duplicate #" + original.getId() + ")"
+        String how = preferred != null ? "(same technician as possible duplicate " + original.getReference() + ")"
                 : "using " + assignment.getActive();
         Optional<User> chosen = preferred != null ? Optional.of(preferred) : assignment.pick(i);
         chosen.ifPresent(t -> {
@@ -176,9 +208,8 @@ public class IncidentService {
         });
 
         if (original != null) {
-            incidents.save(i);
             int pct = (int) Math.round(matches.get(0).similarity() * 100);
-            log(i, "DUPLICATE_DETECTED", null, "Possible duplicate of #" + original.getId() + " (" + pct + "% keyword overlap"
+            log(i, "DUPLICATE_DETECTED", null, "Possible duplicate of " + original.getReference() + " (" + pct + "% keyword overlap"
                     + (matches.size() > 1 ? ", " + (matches.size() - 1) + " more similar open incident(s)" : "") + ")");
         }
         return view(i, me);

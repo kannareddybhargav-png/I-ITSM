@@ -21,7 +21,7 @@ public class NotificationListener {
     @EventListener
     public void on(IncidentEvent e) {
         Incident i = e.incident();
-        String ref = "Incident #" + i.getId() + " (" + i.getTitle() + ")";
+        String ref = "Incident " + i.getReference() + " (" + i.getTitle() + ")";
         User tech = i.getTechnician();
         switch (e.action()) {
             case "CREATED" -> send(List.of(i.getReporter()), "INCIDENT_CREATED", ref + " was submitted.");

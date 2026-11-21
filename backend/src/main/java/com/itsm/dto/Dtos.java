@@ -12,10 +12,14 @@ public final class Dtos {
     public record RegisterRequest(@NotBlank String name, @NotBlank @Email String email, @NotBlank @Size(min = 6) String password) {}
     public record LoginRequest(@NotBlank String email, @NotBlank String password) {}
     public record AuthResponse(String token, UserDto user) {}
+    public record RegisterResponse(UserDto user, boolean verificationRequired, String message) {}
+    public record VerifyRequest(@NotBlank String token) {}
+    public record ResendRequest(@NotBlank @Email String email) {}
+    public record VerifiedRequest(boolean verified) {}
 
-    public record UserDto(Long id, String name, String email, Role role, boolean available, Set<String> skills) {
+    public record UserDto(Long id, String name, String email, Role role, boolean available, Set<String> skills, boolean verified, boolean emailConfirmed) {
         public static UserDto from(User u) {
-            return new UserDto(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.isAvailable(), new HashSet<>(u.getSkills()));
+            return new UserDto(u.getId(), u.getName(), u.getEmail(), u.getRole(), u.isAvailable(), new HashSet<>(u.getSkills()), u.isVerified(), u.isEmailConfirmed());
         }
     }
     public record CreateUserRequest(@NotBlank String name, @NotBlank @Email String email,
@@ -55,17 +59,19 @@ public final class Dtos {
                               Long technicianId, String technician, Instant createdAt, Instant acknowledgedAt,
                               Instant resolvedAt, Instant responseDeadline, Instant resolutionDeadline,
                               boolean responseViolated, boolean resolutionViolated, String resolution,
-                              Long duplicateOfId, int escalationLevel) {
+                              Long duplicateOfId, int escalationLevel, String reference, String duplicateOfReference) {
         /** Technicians see the priority but not how it was calculated (impact, criticality, urgency, score). */
         public IncidentDto forRole(Role role) {
             if (role != Role.TECHNICIAN) return this;
             return new IncidentDto(id, title, description, categoryId, category, serviceId, service, 0, 0, null, 0,
                     priority, status, reporterId, reporter, technicianId, technician, createdAt, acknowledgedAt,
                     resolvedAt, responseDeadline, resolutionDeadline, responseViolated, resolutionViolated, resolution,
-                    duplicateOfId, escalationLevel);
+                    duplicateOfId, escalationLevel, reference, duplicateOfReference);
         }
 
-        public static IncidentDto from(Incident i) {
+        public static IncidentDto from(Incident i) { return from(i, null); }
+
+        public static IncidentDto from(Incident i, String duplicateOfReference) {
             User t = i.getTechnician();
             return new IncidentDto(i.getId(), i.getTitle(), i.getDescription(),
                     i.getCategory().getId(), i.getCategory().getName(), i.getService().getId(), i.getService().getName(),
@@ -74,7 +80,8 @@ public final class Dtos {
                     t == null ? null : t.getId(), t == null ? null : t.getName(),
                     i.getCreatedAt(), i.getAcknowledgedAt(), i.getResolvedAt(), i.getResponseDeadline(),
                     i.getResolutionDeadline(), i.isResponseViolated(), i.isResolutionViolated(), i.getResolution(),
-                    i.getDuplicateOfId(), i.getEscalationLevel() == null ? 0 : i.getEscalationLevel());
+                    i.getDuplicateOfId(), i.getEscalationLevel() == null ? 0 : i.getEscalationLevel(),
+                    i.getReference(), duplicateOfReference);
         }
     }
 }

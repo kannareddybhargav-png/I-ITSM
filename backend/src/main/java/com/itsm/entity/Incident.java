@@ -40,4 +40,16 @@ public class Incident {
     /** Id of the earlier open incident this one looks like (duplicate detection). */
     private Long duplicateOfId;
     private Integer escalationLevel;
+    /** Base number of the reference. Originals use their own id; duplicates share the number of the incident they duplicate. */
+    private Long refNumber;
+    /** 1, 2, 3... for the duplicates of one original (shown as -D1, -D2...); null for an original incident. */
+    private Integer duplicateSeq;
+
+    /** Human-readable reference, e.g. INC-P1-0008 for an original and INC-P3-0003-D1 for its first duplicate. */
+    public String getReference() {
+        long base = refNumber != null ? refNumber : (duplicateOfId != null ? duplicateOfId : (id == null ? 0 : id));
+        String p = priority == null ? "P0" : priority.name();
+        String ref = String.format("INC-%s-%04d", p, base);
+        return duplicateSeq != null ? ref + "-D" + duplicateSeq : ref;
+    }
 }

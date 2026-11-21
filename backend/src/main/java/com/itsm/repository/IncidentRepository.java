@@ -17,6 +17,8 @@ public interface IncidentRepository extends JpaRepository<Incident, Long>, JpaSp
     List<Incident> findByResponseViolatedTrueOrResolutionViolatedTrueOrderByCreatedAtDesc();
     List<Incident> findByStatusNotInAndCreatedAtAfter(Collection<IncidentStatus> statuses, Instant since);
     List<Incident> findByDuplicateOfId(Long duplicateOfId);
+    long countByRefNumberAndDuplicateSeqNotNull(Long refNumber);
+    List<Incident> findByRefNumberIsNullOrderByIdAsc();
     Optional<Incident> findFirstByReporterIdAndTitleAndDescriptionAndCreatedAtAfter(Long reporterId, String title, String description, Instant since);
     List<Incident> findByAcknowledgedAtIsNullAndPriorityInAndStatusIn(Collection<Priority> priorities, Collection<IncidentStatus> statuses);
 }

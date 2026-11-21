@@ -27,6 +27,7 @@ public class AdminController {
     private final IncidentRepository incidents;
     private final AssignmentService assignment;
     private final PasswordEncoder encoder;
+    private final NotificationRepository notifications;
 
     // ----- users & technicians -----
     @GetMapping("/api/users")
@@ -52,6 +53,29 @@ public class AdminController {
         if (r.available() != null) u.setAvailable(r.available());
         if (r.skills() != null) u.setSkills(new HashSet<>(r.skills()));
         return UserDto.from(users.save(u));
+    }
+
+    @PutMapping("/api/users/{id}/verified")
+    @PreAuthorize("hasRole('ADMIN')")
+    public UserDto setVerified(@PathVariable Long id, @RequestBody VerifiedRequest r) {
+        User u = users.findById(id).filter(x -> x.getRole() == Role.EMPLOYEE)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Employee not found"));
+        boolean was = u.isVerified();
+        u.setVerified(r.verified());
+        if (r.verified()) {
+            u.setEmailVerified(true);
+            u.setVerificationToken(null);
+            u.setVerificationExpiresAt(null);
+        }
+        users.save(u);
+        if (!was && r.verified()) {
+            Notification n = new Notification();
+            n.setUser(u);
+            n.setType("ACCOUNT_VERIFIED");
+            n.setMessage("Your account has been verified. You can now report incidents.");
+            notifications.save(n);
+        }
+        return UserDto.from(u);
     }
 
     @GetMapping("/api/technicians")

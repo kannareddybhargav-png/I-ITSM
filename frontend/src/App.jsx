@@ -11,6 +11,23 @@ const URGENCY = [
   { v: 5, t: 'Critical', d: 'Work has stopped and it needs fixing now.' },
 ];
 const fmt = (t) => (t ? new Date(t).toLocaleString() : '-');
+/** 45m, 3h 05m, or 1d 6h 30m once it is a day or more. */
+const duration = (ms) => {
+  const total = Math.floor(ms / 60000);
+  const d = Math.floor(total / 1440), h = Math.floor((total % 1440) / 60), m = total % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+};
+const fmtShort = (t) => (t ? new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-');
+const OPEN_STATUSES = ['NEW', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS'];
+const DONE_STATUSES = ['RESOLVED', 'VERIFIED', 'CLOSED'];
+/** How a resolved incident did against its resolution deadline. */
+const slaResult = (i) => {
+  if (!i.resolvedAt || !i.resolutionDeadline) return null;
+  const diff = new Date(i.resolvedAt) - new Date(i.resolutionDeadline);
+  return diff > 0 ? { late: true, text: `Late by ${duration(diff)}` } : { late: false, text: 'Within SLA' };
+};
+const ref = (i) => i.reference || `INC-${i.priority || 'P0'}-${String(i.id).padStart(4, '0')}`;
 const label = (s) => s.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase());
 const actionLabel = (a) => label(a).replace(/ l(\d)$/, ' (level $1)');
 const tone = (s) => (['NEW', 'CLASSIFIED', 'PRIORITIZED'].includes(s) ? 'wait' : ['ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS'].includes(s) ? 'active' : ['RESOLVED', 'VERIFIED'].includes(s) ? 'done' : 'closed');
@@ -23,6 +40,7 @@ const ICON = {
   plus: <path d="M12 5v14M5 12h14" />,
   sliders: <><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" /><circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="17" cy="18" r="2" /></>,
   bell: <><path d="M6 9a6 6 0 1 1 12 0c0 6 2 7 2 7H4s2-1 2-7" /><path d="M10 20a2 2 0 0 0 4 0" /></>,
+  layers: <><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13l9 5 9-5" /></>,
   logout: <path d="M9 4H5v16h4M16 8l4 4-4 4M20 12H9" />,
 };
 const Icon = ({ name, size = 18 }) => (
@@ -32,17 +50,25 @@ const Icon = ({ name, size = 18 }) => (
 const Priority = ({ p }) => (p ? <span className={`chip ${p}`}>{p}</span> : <span className="muted">-</span>);
 const Status = ({ s }) => <span className={`pill ${tone(s)}`}>{label(s)}</span>;
 
-function Countdown({ deadline, stopped, violated }) {
+function Countdown({ deadline, stopped, violated, doneAt, doneLabel }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
   if (!deadline) return <b>-</b>;
-  if (stopped) return violated ? <b className="bad">Breached</b> : <b className="ok">Met</b>;
+  if (stopped) {
+    return (
+      <>
+        <b className={'done ' + (violated ? 'bad' : 'ok')}>{doneLabel || 'Done'} on {fmtShort(doneAt)}</b>
+        <small className={violated ? 'bad' : 'ok'}>{violated ? 'SLA breached' : 'Within SLA'}</small>
+      </>
+    );
+  }
   const ms = new Date(deadline) - now;
-  if (ms < 0) return <b className="bad">Overdue {Math.floor(-ms / 60000)} min</b>;
+  if (ms < 0) return <b className="bad">Overdue {duration(-ms)}</b>;
   const s = Math.floor(ms / 1000);
+  if (ms >= 86400000) return <b className="ok">{duration(ms)}</b>;
   return <b className={ms < 300000 ? 'warn' : 'ok'}>{Math.floor(s / 3600)}h {Math.floor((s % 3600) / 60)}m {s % 60}s</b>;
 }
 
@@ -58,19 +84,54 @@ function Login({ onAuth }) {
   const [mode, setMode] = useState('login');
   const [f, setF] = useState({ name: '', email: '', password: '' });
   const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+  const [unconfirmed, setUnconfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const choose = (r) => { setRole(r); setMode('login'); setErr(''); setF({ name: '', email: '', password: '' }); };
+  const choose = (r) => { setRole(r); setMode('login'); setErr(''); setInfo(''); setUnconfirmed(false); setF({ name: '', email: '', password: '' }); };
+
+  // Confirmation link from the verification email: /?verify=<token>
+  useEffect(() => {
+    const token = new URLSearchParams(location.search).get('verify');
+    if (!token) return;
+    history.replaceState(null, '', location.pathname);
+    setRole(ROLES[0]);
+    api('/api/auth/verify', { method: 'POST', body: { token } })
+      .then((r) => { setErr(''); setInfo(r.message); })
+      .catch((x) => setErr(x.message));
+  }, []);
+
+  const resend = async () => {
+    try {
+      const r = await api('/api/auth/resend-verification', { method: 'POST', body: { email: f.email } });
+      setErr(''); setUnconfirmed(false); setInfo(r.message);
+    } catch (x) { setErr(x.message); }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
-    setErr('');
+    if (busy) return;
+    setBusy(true);
+    setErr(''); setInfo(''); setUnconfirmed(false);
     try {
-      if (mode === 'register') await api('/api/auth/register', { method: 'POST', body: f });
+      if (mode === 'register') {
+        const reg = await api('/api/auth/register', { method: 'POST', body: f });
+        if (reg.verificationRequired) {
+          setMode('login');
+          setF({ ...f, name: '', password: '' });
+          setInfo(reg.message);
+          return;
+        }
+      }
       const r = await api('/api/auth/login', { method: 'POST', body: { email: f.email, password: f.password } });
       if (r.user.role !== role.key) throw new Error(`This account is not a ${role.title.toLowerCase()} account. Go back and choose the right user type.`);
       localStorage.setItem('token', r.token);
       localStorage.setItem('user', JSON.stringify(r.user));
       onAuth(r.user);
-    } catch (x) { setErr(x.message); }
+    } catch (x) {
+      setErr(x.message);
+      setUnconfirmed(/confirm your email/i.test(x.message));
+    } finally { setBusy(false); }
   };
   return (
     <div className="auth">
@@ -90,15 +151,18 @@ function Login({ onAuth }) {
       ) : (
         <form className="card auth-form" onSubmit={submit}>
           <div className="who"><span className="ic"><Icon name={role.icon} /></span><h3>{role.title} {mode === 'login' ? 'sign in' : 'sign up'}</h3></div>
+          {info && <div className="banner info" style={{ margin: 0 }}>{info}</div>}
           {mode === 'register' && <label>Full name<input required value={f.name} onChange={set('name')} /></label>}
           <label>Email<input required type="email" value={f.email} onChange={set('email')} /></label>
           <label>Password<input required type="password" minLength={6} value={f.password} onChange={set('password')} /></label>
           {role.key !== 'EMPLOYEE' && <p className="hint" style={{ margin: 0 }}>{role.title} accounts are created by an administrator.</p>}
+          {mode === 'register' && <p className="hint" style={{ margin: 0 }}>We email you a link to confirm the address. After that, an administrator has to verify your account before you can report incidents.</p>}
           {err && <div className="error">{err}</div>}
+          {unconfirmed && <button type="button" className="linkbtn" onClick={resend}>Send the confirmation link again</button>}
           <div className="actions" style={{ marginTop: 0 }}>
-            <button className="btn">{mode === 'login' ? 'Sign in' : 'Create account'}</button>
+            <button className="btn" disabled={busy}>{mode === 'login' ? 'Sign in' : 'Create account'}</button>
             {role.key === 'EMPLOYEE' && (
-              <button type="button" className="btn alt" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setErr(''); }}>
+              <button type="button" className="btn alt" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setErr(''); setInfo(''); setUnconfirmed(false); }}>
                 {mode === 'login' ? 'Sign up instead' : 'I already have an account'}
               </button>
             )}
@@ -156,9 +220,15 @@ function ReportForm({ meta, onDone }) {
 }
 
 /* ---------------- incident list ---------------- */
-function Stats({ version }) {
+const scopeHint = (role, scope) => {
+  if (role === 'EMPLOYEE') return 'The incidents you reported.';
+  if (scope === 'all') return 'Every incident in the system.';
+  return role === 'TECHNICIAN' ? 'Every incident assigned to you, past and present.' : 'The incidents you reported yourself.';
+};
+
+function Stats({ version, scope }) {
   const [all, setAll] = useState([]);
-  useEffect(() => { api('/api/incidents').then(setAll).catch(() => {}); }, [version]);
+  useEffect(() => { api('/api/incidents?scope=' + scope).then(setAll).catch(() => {}); }, [version, scope]);
   const open = all.filter((i) => !['VERIFIED', 'CLOSED'].includes(i.status));
   const tiles = [
     ['Open incidents', open.length, false],
@@ -169,23 +239,37 @@ function Stats({ version }) {
   return <div className="stats">{tiles.map(([t, n, hot]) => <div key={t} className={'stat' + (hot && n > 0 ? ' hot' : '')}><span>{t}</span><b>{n}</b></div>)}</div>;
 }
 
-function IncidentList({ user, meta, techs, onOpen, version }) {
+function IncidentList({ user, meta, techs, onOpen, version, scope }) {
   const [f, setF] = useState({ q: '', status: '', priority: '', categoryId: '', serviceId: '', technicianId: '', from: '' });
+  const [group, setGroup] = useState('open');
   const [rows, setRows] = useState([]);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   useEffect(() => {
     const p = new URLSearchParams();
     Object.entries(f).forEach(([k, v]) => v && p.set(k, v));
+    p.set('scope', scope);
     api('/api/incidents?' + p).then(setRows).catch((e) => setErr(e.message));
-  }, [f, version]);
+  }, [f, version, scope]);
+  const open = rows.filter((r) => OPEN_STATUSES.includes(r.status));
+  const done = rows
+    .filter((r) => DONE_STATUSES.includes(r.status))
+    .sort((a, b) => new Date(b.resolvedAt || b.createdAt) - new Date(a.resolvedAt || a.createdAt));
+  const resolved = group === 'done';
+  const shown = resolved ? done : open;
+  const pick = (g) => { setGroup(g); setF({ ...f, status: '' }); };
   return (
     <>
-      <Stats version={version} />
+      <Stats version={version} scope={scope} />
+      <p className="hint" style={{ margin: '0 0 10px' }}>{scopeHint(user.role, scope)}</p>
+      <div className="tabs">
+        <button className={!resolved ? 'on' : ''} onClick={() => pick('open')}>Open cases <span className="count">{open.length}</span></button>
+        <button className={resolved ? 'on' : ''} onClick={() => pick('done')}>Resolved cases <span className="count">{done.length}</span></button>
+      </div>
       <div className="card">
         <div className="row" style={{ marginBottom: 14 }}>
-          <label style={{ flex: '2 1 220px' }}>Search<input placeholder="Title or description" value={f.q} onChange={set('q')} /></label>
-          <label>Status<select value={f.status} onChange={set('status')}><option value="">Any</option>{STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}</select></label>
+          <label style={{ flex: '2 1 220px' }}>Search<input placeholder="Title, description or ID (INC-P3-0003)" value={f.q} onChange={set('q')} /></label>
+          <label>Status<select value={f.status} onChange={set('status')}><option value="">Any</option>{(resolved ? DONE_STATUSES : OPEN_STATUSES).map((s) => <option key={s} value={s}>{label(s)}</option>)}</select></label>
           <label>Priority<select value={f.priority} onChange={set('priority')}><option value="">Any</option>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></label>
           <label>Category<select value={f.categoryId} onChange={set('categoryId')}><option value="">Any</option>{meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
           <label>Service<select value={f.serviceId} onChange={set('serviceId')}><option value="">Any</option>{meta.services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
@@ -195,18 +279,25 @@ function IncidentList({ user, meta, techs, onOpen, version }) {
         {err && <div className="error">{err}</div>}
         <div className="table-wrap">
           <table>
-            <thead><tr><th>#</th><th>Incident</th><th>Priority</th><th>Status</th><th>Service</th><th>Technician</th><th>Resolve by</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Incident</th><th>Priority</th><th>Status</th><th>Service</th><th>Technician</th>{resolved ? <><th>Resolved on</th><th>SLA</th></> : <th>Resolve by</th>}</tr>
+            </thead>
             <tbody>
-              {rows.map((i) => (
-                <tr key={i.id} className="click" onClick={() => onOpen(i.id)}>
-                  <td className="muted">{i.id}</td>
-                  <td><b>{i.title}</b>{i.escalationLevel > 0 && <span className="flag esc">Escalated</span>}{i.duplicateOfId && <span className="flag dup">Duplicate of #{i.duplicateOfId}</span>}</td>
-                  <td><Priority p={i.priority} /></td><td><Status s={i.status} /></td>
-                  <td>{i.service}</td><td>{i.technician || <span className="muted">Unassigned</span>}</td>
-                  <td><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} /></td>
-                </tr>
-              ))}
-              {rows.length === 0 && <tr><td colSpan={7} className="muted">No incidents match these filters.</td></tr>}
+              {shown.map((i) => {
+                const sla = slaResult(i);
+                return (
+                  <tr key={i.id} className="click" onClick={() => onOpen(i.id)}>
+                    <td className="ref">{ref(i)}</td>
+                    <td><b>{i.title}</b>{i.escalationLevel > 0 && <span className="flag esc">Escalated</span>}{i.duplicateOfId && <span className="flag dup">Duplicate of {i.duplicateOfReference || 'another incident'}</span>}</td>
+                    <td><Priority p={i.priority} /></td><td><Status s={i.status} /></td>
+                    <td>{i.service}</td><td>{i.technician || <span className="muted">Unassigned</span>}</td>
+                    {resolved
+                      ? <><td>{fmtShort(i.resolvedAt)}</td><td>{sla ? <span className={sla.late ? 'bad' : 'ok'}>{sla.text}</span> : '-'}</td></>
+                      : <td><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} doneAt={i.resolvedAt} doneLabel="Resolved" /></td>}
+                  </tr>
+                );
+              })}
+              {shown.length === 0 && <tr><td colSpan={resolved ? 8 : 7} className="muted">{resolved ? 'No resolved incidents match these filters.' : 'No open incidents match these filters.'}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -242,7 +333,7 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
     finally { busy.current = false; }
   };
   if (!i) return <div className="card">{err ? <div className="error">{err}</div> : 'Loading…'}</div>;
-  const isTech = user.role === 'TECHNICIAN';
+  const isTech = user.role === 'TECHNICIAN' && i.technicianId === user.id;
   const reporterOrAdmin = user.role === 'ADMIN' || user.role === 'EMPLOYEE';
   return (
     <>
@@ -250,12 +341,12 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
       <div className="cols">
         <div>
           <div className="card">
-            <div className="titlebar"><h3>#{i.id} {i.title}</h3><Priority p={i.priority} /><Status s={i.status} /></div>
-            {i.duplicateOfId && <div className="banner info">This looks like a duplicate of open incident #{i.duplicateOfId}. It has been linked so the team can handle both together.</div>}
+            <div className="titlebar"><h3><span className="ref">{ref(i)}</span> {i.title}</h3><Priority p={i.priority} /><Status s={i.status} /></div>
+            {i.duplicateOfId && <div className="banner info">This looks like a duplicate of open incident {i.duplicateOfReference || 'reported earlier'}. It has been linked so the team can handle both together.</div>}
             {i.escalationLevel > 0 && <div className="banner warn">Escalated (level {i.escalationLevel}) because it was not acknowledged in time.</div>}
             <div className="timers">
-              <div className="timer"><span>Time to respond</span><Countdown deadline={i.responseDeadline} stopped={!!i.acknowledgedAt} violated={i.responseViolated} /></div>
-              <div className="timer"><span>Time to resolve</span><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} /></div>
+              <div className="timer"><span>Time to respond</span><Countdown deadline={i.responseDeadline} stopped={!!i.acknowledgedAt} violated={i.responseViolated} doneAt={i.acknowledgedAt} doneLabel="Acknowledged" /></div>
+              <div className="timer"><span>Time to resolve</span><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} doneAt={i.resolvedAt} doneLabel="Resolved" /></div>
             </div>
             <p style={{ margin: '4px 0 0' }}>{i.description}</p>
             <dl className="kv">
@@ -311,7 +402,7 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
               <div className="table-wrap"><table><tbody>
                 {related.map((r) => (
                   <tr key={r.id} className={user.role === 'ADMIN' ? 'click' : ''} onClick={() => user.role === 'ADMIN' && onOpen(r.id)}>
-                    <td className="muted">#{r.id}</td><td><b>{r.title}</b></td><td><Priority p={r.priority} /></td><td><Status s={r.status} /></td>
+                    <td className="ref">{ref(r)}</td><td><b>{r.title}</b></td><td><Priority p={r.priority} /></td><td><Status s={r.status} /></td>
                   </tr>
                 ))}
               </tbody></table></div>
@@ -352,11 +443,14 @@ function WeightTable({ title, sub, rows, setRows, saveUrl, onSaved, run }) {
   );
 }
 
-function AdminTools({ meta, onMetaChange }) {
+function AdminTools({ meta, onMetaChange, version }) {
+  const [section, setSection] = useState('settings');
   const [users, setUsers] = useState([]);
+  const [techs, setTechs] = useState([]);
   const [policies, setPolicies] = useState([]);
   const [strategy, setStrategy] = useState({ active: '', options: [] });
   const [violations, setViolations] = useState([]);
+  const [all, setAll] = useState([]);
   const [cats, setCats] = useState([]);
   const [svcs, setSvcs] = useState([]);
   const [nu, setNu] = useState({ name: '', email: '', password: '', role: 'TECHNICIAN', skills: '' });
@@ -365,95 +459,173 @@ function AdminTools({ meta, onMetaChange }) {
   const [err, setErr] = useState('');
   const load = useCallback(() => {
     api('/api/users').then(setUsers).catch((e) => setErr(e.message));
-    api('/api/sla/policies').then(setPolicies);
-    api('/api/config/assignment-strategy').then(setStrategy);
-    api('/api/sla/violations').then(setViolations);
+    api('/api/technicians').then(setTechs).catch(() => {});
+    api('/api/sla/policies').then(setPolicies).catch(() => {});
+    api('/api/config/assignment-strategy').then(setStrategy).catch(() => {});
+    api('/api/sla/violations').then(setViolations).catch(() => {});
+    api('/api/incidents').then(setAll).catch(() => {});
   }, []);
-  useEffect(load, [load]);
+  useEffect(() => { load(); }, [load, version]);
   useEffect(() => { setCats(meta.categories); setSvcs(meta.services); }, [meta]);
   const run = async (fn) => { try { setErr(''); await fn(); load(); } catch (e) { setErr(e.message); } };
   const setPol = (p, k, v) => setPolicies(policies.map((x) => (x.priority === p ? { ...x, [k]: +v } : x)));
+  const setVerified = (u, verified) => run(() => api(`/api/users/${u.id}/verified`, { method: 'PUT', body: { verified } }));
+  const employees = users.filter((u) => u.role === 'EMPLOYEE');
+  const pending = employees.filter((u) => u.verified === false);
+  const admins = users.filter((u) => u.role === 'ADMIN');
+  const escalated = all.filter((i) => i.escalationLevel > 0 && OPEN_STATUSES.includes(i.status));
   return (
     <>
+      <div className="tabs">
+        <button className={section === 'settings' ? 'on' : ''} onClick={() => setSection('settings')}>Settings</button>
+        <button className={section === 'people' ? 'on' : ''} onClick={() => setSection('people')}>People {pending.length > 0 && <span className="count alert">{pending.length} to verify</span>}</button>
+        <button className={section === 'monitoring' ? 'on' : ''} onClick={() => setSection('monitoring')}>Monitoring</button>
+      </div>
       {err && <div className="error">{err}</div>}
-      <div className="card">
-        <h3>How priority is calculated</h3>
-        <p className="sub">Score = service impact × category criticality × urgency (each 1 to 5, so 1 to 125). P1 is 75 or more, P2 is 40 or more, P3 is 15 or more, P4 is below that. Changing a weight affects new and edited incidents only.</p>
-      </div>
-      <div className="cols" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
-        <div>
-          <WeightTable title="Service impact weights" sub="How badly an incident on this service hurts the business." rows={svcs} setRows={setSvcs} saveUrl={(id) => `/api/services/${id}/weight`} onSaved={onMetaChange} run={run} />
-          <form className="card" onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/services', { method: 'POST', body: { ...ns, criticality: +ns.criticality } }); setNs({ name: '', criticality: 3 }); onMetaChange(); }); }}>
-            <h3>Add a service</h3>
-            <div className="row" style={{ marginTop: 10 }}>
-              <label>Name<input required value={ns.name} onChange={(e) => setNs({ ...ns, name: e.target.value })} /></label>
-              <label>Impact weight<input type="number" min={1} max={5} value={ns.criticality} onChange={(e) => setNs({ ...ns, criticality: e.target.value })} /></label>
-              <button className="btn" style={{ flex: '0 0 auto' }}>Add</button>
+
+      {section === 'settings' && (
+        <>
+          <div className="card">
+            <h3>How priority is calculated</h3>
+            <p className="sub">Score = service impact × category criticality × urgency (each 1 to 5, so 1 to 125). P1 is 75 or more, P2 is 40 or more, P3 is 15 or more, P4 is below that. Changing a weight affects new and edited incidents only.</p>
+          </div>
+          <div className="cols" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
+            <div>
+              <WeightTable title="Service impact weights" sub="How badly an incident on this service hurts the business." rows={svcs} setRows={setSvcs} saveUrl={(id) => `/api/services/${id}/weight`} onSaved={onMetaChange} run={run} />
+              <form className="card" onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/services', { method: 'POST', body: { ...ns, criticality: +ns.criticality } }); setNs({ name: '', criticality: 3 }); onMetaChange(); }); }}>
+                <h3>Add a service</h3>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <label>Name<input required value={ns.name} onChange={(e) => setNs({ ...ns, name: e.target.value })} /></label>
+                  <label>Impact weight<input type="number" min={1} max={5} value={ns.criticality} onChange={(e) => setNs({ ...ns, criticality: e.target.value })} /></label>
+                  <button className="btn" style={{ flex: '0 0 auto' }}>Add</button>
+                </div>
+              </form>
             </div>
-          </form>
-        </div>
-        <div>
-          <WeightTable title="Category criticality weights" sub="How business-critical this kind of problem is." rows={cats} setRows={setCats} saveUrl={(id) => `/api/categories/${id}/weight`} onSaved={onMetaChange} run={run} />
-          <form className="card" onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/categories', { method: 'POST', body: { ...nc, criticality: +nc.criticality } }); setNc({ name: '', criticality: 3 }); onMetaChange(); }); }}>
-            <h3>Add a category</h3>
-            <div className="row" style={{ marginTop: 10 }}>
-              <label>Name<input required value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value })} /></label>
-              <label>Criticality weight<input type="number" min={1} max={5} value={nc.criticality} onChange={(e) => setNc({ ...nc, criticality: e.target.value })} /></label>
-              <button className="btn" style={{ flex: '0 0 auto' }}>Add</button>
+            <div>
+              <WeightTable title="Category criticality weights" sub="How business-critical this kind of problem is." rows={cats} setRows={setCats} saveUrl={(id) => `/api/categories/${id}/weight`} onSaved={onMetaChange} run={run} />
+              <form className="card" onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/categories', { method: 'POST', body: { ...nc, criticality: +nc.criticality } }); setNc({ name: '', criticality: 3 }); onMetaChange(); }); }}>
+                <h3>Add a category</h3>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <label>Name<input required value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value })} /></label>
+                  <label>Criticality weight<input type="number" min={1} max={5} value={nc.criticality} onChange={(e) => setNc({ ...nc, criticality: e.target.value })} /></label>
+                  <button className="btn" style={{ flex: '0 0 auto' }}>Add</button>
+                </div>
+              </form>
             </div>
-          </form>
-        </div>
-      </div>
+          </div>
 
-      <div className="card">
-        <h3>Technician assignment strategy</h3>
-        <p className="sub">Skill based picks a matching technician with the lowest workload. Load based picks the least busy available technician.</p>
-        <select style={{ maxWidth: 280 }} value={strategy.active} onChange={(e) => run(async () => setStrategy(await api('/api/config/assignment-strategy', { method: 'PUT', body: { strategy: e.target.value } })))}>
-          {strategy.options.map((o) => <option key={o} value={o}>{label(o)}</option>)}
-        </select>
-      </div>
+          <div className="card">
+            <h3>Technician assignment strategy</h3>
+            <p className="sub">Skill based picks a matching technician with the lowest workload. Load based picks the least busy available technician.</p>
+            <select style={{ maxWidth: 280 }} value={strategy.active} onChange={(e) => run(async () => setStrategy(await api('/api/config/assignment-strategy', { method: 'PUT', body: { strategy: e.target.value } })))}>
+              {strategy.options.map((o) => <option key={o} value={o}>{label(o)}</option>)}
+            </select>
+          </div>
 
-      <div className="card">
-        <h3>SLA policies</h3>
-        <p className="sub">Minutes. Unacknowledged P1 and P2 incidents escalate to administrators after the response time, then to IT management and another technician after a second response window.</p>
-        <div className="table-wrap"><table>
-          <thead><tr><th>Priority</th><th>Respond within</th><th>Resolve within</th><th></th></tr></thead>
-          <tbody>{policies.map((p) => (
-            <tr key={p.priority}><td><Priority p={p.priority} /></td>
-              <td><input type="number" min={1} value={p.responseMinutes} onChange={(e) => setPol(p.priority, 'responseMinutes', e.target.value)} /></td>
-              <td><input type="number" min={1} value={p.resolutionMinutes} onChange={(e) => setPol(p.priority, 'resolutionMinutes', e.target.value)} /></td>
-              <td><button className="btn alt small" onClick={() => run(() => api('/api/sla/policies/' + p.priority, { method: 'PUT', body: { responseMinutes: p.responseMinutes, resolutionMinutes: p.resolutionMinutes } }))}>Save</button></td></tr>
-          ))}</tbody></table></div>
-      </div>
+          <div className="card">
+            <h3>SLA policies</h3>
+            <p className="sub">Minutes. Unacknowledged P1 and P2 incidents escalate to administrators after the response time, then to IT management and another technician after a second response window.</p>
+            <div className="table-wrap"><table>
+              <thead><tr><th>Priority</th><th>Respond within</th><th>Resolve within</th><th></th></tr></thead>
+              <tbody>{policies.map((p) => (
+                <tr key={p.priority}><td><Priority p={p.priority} /></td>
+                  <td><input type="number" min={1} value={p.responseMinutes} onChange={(e) => setPol(p.priority, 'responseMinutes', e.target.value)} /></td>
+                  <td><input type="number" min={1} value={p.resolutionMinutes} onChange={(e) => setPol(p.priority, 'resolutionMinutes', e.target.value)} /></td>
+                  <td><button className="btn alt small" onClick={() => run(() => api('/api/sla/policies/' + p.priority, { method: 'PUT', body: { responseMinutes: p.responseMinutes, resolutionMinutes: p.resolutionMinutes } }))}>Save</button></td></tr>
+              ))}</tbody></table></div>
+          </div>
+        </>
+      )}
 
-      <div className="card">
-        <h3>Users</h3>
-        <div className="table-wrap" style={{ marginTop: 10 }}><table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Skills</th><th>Availability</th></tr></thead>
-          <tbody>{users.map((u) => (
-            <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td>{label(u.role)}</td><td>{[...u.skills].join(', ') || '-'}</td>
-              <td>{u.role === 'TECHNICIAN' ? <button className="btn alt small" onClick={() => run(() => api(`/api/users/${u.id}/technician`, { method: 'PUT', body: { available: !u.available } }))}>{u.available ? 'Available (pause)' : 'Unavailable (enable)'}</button> : '-'}</td></tr>
-          ))}</tbody></table></div>
-        <h3 style={{ marginTop: 20 }}>Add a user</h3>
-        <form className="row" style={{ marginTop: 10 }} onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/users', { method: 'POST', body: { ...nu, skills: nu.skills.split(',').map((s) => s.trim()).filter(Boolean) } }); setNu({ ...nu, name: '', email: '', password: '', skills: '' }); }); }}>
-          <label>Name<input required value={nu.name} onChange={(e) => setNu({ ...nu, name: e.target.value })} /></label>
-          <label>Email<input required type="email" value={nu.email} onChange={(e) => setNu({ ...nu, email: e.target.value })} /></label>
-          <label>Password<input required minLength={6} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} /></label>
-          <label>Role<select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}>{['EMPLOYEE', 'TECHNICIAN', 'ADMIN'].map((r) => <option key={r}>{r}</option>)}</select></label>
-          <label>Skills (category names, comma separated)<input value={nu.skills} onChange={(e) => setNu({ ...nu, skills: e.target.value })} /></label>
-          <button className="btn" style={{ flex: '0 0 auto' }}>Add user</button>
-        </form>
-      </div>
+      {section === 'people' && (
+        <>
+          <div className="card">
+            <h3>Waiting for verification</h3>
+            <p className="sub">Employees who signed up themselves cannot report incidents until you verify them. Verifying also accepts their email address.</p>
+            <div className="table-wrap"><table>
+              <thead><tr><th>Name</th><th>Email</th><th>Email check</th><th style={{ width: 120 }}></th></tr></thead>
+              <tbody>
+                {pending.map((u) => (
+                  <tr key={u.id}><td><b>{u.name}</b></td><td>{u.email}</td><td>{u.emailConfirmed === false ? <span className="bad">Not confirmed</span> : <span className="ok">Confirmed</span>}</td><td><button className="btn small" onClick={() => setVerified(u, true)}>Verify</button></td></tr>
+                ))}
+                {pending.length === 0 && <tr><td colSpan={4} className="muted">Nobody is waiting for verification.</td></tr>}
+              </tbody></table></div>
+          </div>
 
-      <div className="card">
-        <h3>SLA violations</h3>
-        <div className="table-wrap" style={{ marginTop: 10 }}><table>
-          <thead><tr><th>#</th><th>Title</th><th>Priority</th><th>Response</th><th>Resolution</th></tr></thead>
-          <tbody>{violations.map((v) => (
-            <tr key={v.id}><td className="muted">{v.id}</td><td>{v.title}</td><td><Priority p={v.priority} /></td>
-              <td>{v.responseViolated ? <span className="bad">Breached</span> : 'OK'}</td><td>{v.resolutionViolated ? <span className="bad">Breached</span> : 'OK'}</td></tr>
-          ))}{violations.length === 0 && <tr><td colSpan={5} className="muted">No SLA breaches recorded.</td></tr>}</tbody></table></div>
-      </div>
+          <div className="card">
+            <h3>Employees</h3>
+            <div className="table-wrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>Name</th><th>Email</th><th>Email check</th><th>Account</th><th style={{ width: 150 }}></th></tr></thead>
+              <tbody>
+                {employees.map((u) => (
+                  <tr key={u.id}><td>{u.name}</td><td>{u.email}</td>
+                    <td>{u.emailConfirmed === false ? <span className="bad">Not confirmed</span> : 'Confirmed'}</td>
+                    <td><span className={'pill ' + (u.verified === false ? 'wait' : 'done')}>{u.verified === false ? 'Pending' : 'Verified'}</span></td>
+                    <td>{u.verified === false
+                      ? <button className="btn small" onClick={() => setVerified(u, true)}>Verify</button>
+                      : <button className="btn alt small" onClick={() => setVerified(u, false)}>Revoke</button>}</td></tr>
+                ))}
+                {employees.length === 0 && <tr><td colSpan={5} className="muted">No employees yet.</td></tr>}
+              </tbody></table></div>
+          </div>
+
+          <div className="card">
+            <h3>Technicians</h3>
+            <div className="table-wrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>Name</th><th>Email</th><th>Skills</th><th>Active incidents</th><th>Availability</th></tr></thead>
+              <tbody>
+                {techs.map((t) => (
+                  <tr key={t.id}><td>{t.name}</td><td>{t.email}</td><td>{[...t.skills].join(', ') || '-'}</td><td>{t.activeIncidents}</td>
+                    <td><button className="btn alt small" onClick={() => run(() => api(`/api/users/${t.id}/technician`, { method: 'PUT', body: { available: !t.available } }))}>{t.available ? 'Available (pause)' : 'Unavailable (enable)'}</button></td></tr>
+                ))}
+                {techs.length === 0 && <tr><td colSpan={5} className="muted">No technicians yet.</td></tr>}
+              </tbody></table></div>
+          </div>
+
+          <div className="card">
+            <h3>Administrators</h3>
+            <div className="table-wrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>Name</th><th>Email</th></tr></thead>
+              <tbody>{admins.map((u) => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td></tr>)}</tbody></table></div>
+          </div>
+
+          <div className="card">
+            <h3>Add a user</h3>
+            <p className="sub">Users you add are verified right away.</p>
+            <form className="row" onSubmit={(e) => { e.preventDefault(); run(async () => { await api('/api/users', { method: 'POST', body: { ...nu, skills: nu.skills.split(',').map((s) => s.trim()).filter(Boolean) } }); setNu({ ...nu, name: '', email: '', password: '', skills: '' }); }); }}>
+              <label>Name<input required value={nu.name} onChange={(e) => setNu({ ...nu, name: e.target.value })} /></label>
+              <label>Email<input required type="email" value={nu.email} onChange={(e) => setNu({ ...nu, email: e.target.value })} /></label>
+              <label>Password<input required minLength={6} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} /></label>
+              <label>Role<select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}>{['EMPLOYEE', 'TECHNICIAN', 'ADMIN'].map((r) => <option key={r}>{r}</option>)}</select></label>
+              <label>Skills (category names, comma separated)<input value={nu.skills} onChange={(e) => setNu({ ...nu, skills: e.target.value })} /></label>
+              <button className="btn" style={{ flex: '0 0 auto' }}>Add user</button>
+            </form>
+          </div>
+        </>
+      )}
+
+      {section === 'monitoring' && (
+        <>
+          <div className="card">
+            <h3>SLA violations</h3>
+            <div className="table-wrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>ID</th><th>Title</th><th>Priority</th><th>Response</th><th>Resolution</th></tr></thead>
+              <tbody>{violations.map((v) => (
+                <tr key={v.id}><td className="ref">{ref(v)}</td><td>{v.title}</td><td><Priority p={v.priority} /></td>
+                  <td>{v.responseViolated ? <span className="bad">Breached</span> : 'OK'}</td><td>{v.resolutionViolated ? <span className="bad">Breached</span> : 'OK'}</td></tr>
+              ))}{violations.length === 0 && <tr><td colSpan={5} className="muted">No SLA breaches recorded.</td></tr>}</tbody></table></div>
+          </div>
+          <div className="card">
+            <h3>Escalated incidents</h3>
+            <p className="sub">Open incidents that were not acknowledged in time.</p>
+            <div className="table-wrap"><table>
+              <thead><tr><th>ID</th><th>Title</th><th>Priority</th><th>Level</th><th>Technician</th></tr></thead>
+              <tbody>{escalated.map((i) => (
+                <tr key={i.id}><td className="ref">{ref(i)}</td><td>{i.title}</td><td><Priority p={i.priority} /></td><td>{i.escalationLevel}</td><td>{i.technician || 'Unassigned'}</td></tr>
+              ))}{escalated.length === 0 && <tr><td colSpan={5} className="muted">No open incidents are escalated.</td></tr>}</tbody></table></div>
+          </div>
+        </>
+      )}
     </>
   );
 }
@@ -484,7 +656,7 @@ export default function App() {
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('user') || 'null'));
   const [meta, setMeta] = useState({ categories: [], services: [] });
   const [techs, setTechs] = useState([]);
-  const [tab, setTab] = useState('incidents');
+  const [tab, setTab] = useState('mine');
   const [openId, setOpenId] = useState(null);
   const [version, setVersion] = useState(0);
   const bump = () => setVersion((v) => v + 1);
@@ -496,15 +668,22 @@ export default function App() {
     if (!user) return undefined;
     loadMeta().catch(() => {});
     if (user.role === 'ADMIN') api('/api/technicians').then(setTechs).catch(() => {});
-    const t = setInterval(bump, 20000);
+    // Pick up changes made by an administrator (for example this employee being verified).
+    const refreshMe = () => api('/api/me').then((u) => {
+      if (u.verified !== user.verified || u.role !== user.role) { localStorage.setItem('user', JSON.stringify(u)); setUser(u); }
+    }).catch(() => {});
+    refreshMe();
+    const t = setInterval(() => { bump(); refreshMe(); }, 20000);
     return () => clearInterval(t);
   }, [user, loadMeta]);
   if (!user) return <Login onAuth={setUser} />;
   const go = (t) => { setTab(t); setOpenId(null); };
-  const tabs = [['incidents', user.role === 'EMPLOYEE' ? 'My incidents' : 'Incidents', 'list']];
-  if (user.role !== 'TECHNICIAN') tabs.push(['report', 'Report incident', 'plus']);
+  const unverified = user.role === 'EMPLOYEE' && user.verified === false;
+  const tabs = [['mine', 'My incidents', 'list']];
+  if (user.role !== 'EMPLOYEE') tabs.push(['all', 'All incidents', 'layers']);
+  if (user.role !== 'TECHNICIAN' && !unverified) tabs.push(['report', 'Report incident', 'plus']);
   if (user.role === 'ADMIN') tabs.push(['admin', 'Administration', 'sliders']);
-  const title = tab === 'report' ? 'Report an incident' : tab === 'admin' ? 'Administration' : openId ? `Incident #${openId}` : user.role === 'EMPLOYEE' ? 'My incidents' : user.role === 'TECHNICIAN' ? 'Assigned to me' : 'All incidents';
+  const title = tab === 'report' ? 'Report an incident' : tab === 'admin' ? 'Administration' : openId ? 'Incident details' : tab === 'all' ? 'All incidents' : 'My incidents';
   const initials = user.name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
   return (
     <div className="app">
@@ -520,11 +699,12 @@ export default function App() {
       <div className="content">
         <div className="topbar"><h2>{title}</h2><Bell /></div>
         <main>
-          {tab === 'report' && <ReportForm meta={meta} onDone={(id) => { bump(); setTab('incidents'); setOpenId(id); }} />}
-          {tab === 'admin' && <AdminTools meta={meta} onMetaChange={loadMeta} />}
-          {tab === 'incidents' && (openId
+          {unverified && <div className="banner warn" style={{ marginTop: 0 }}>Your account is waiting for administrator verification. You can look around, but you cannot report incidents until an administrator verifies you. This page updates by itself once that happens.</div>}
+          {tab === 'report' && !unverified && <ReportForm meta={meta} onDone={(id) => { bump(); setTab('mine'); setOpenId(id); }} />}
+          {tab === 'admin' && <AdminTools meta={meta} onMetaChange={loadMeta} version={version} />}
+          {(tab === 'mine' || tab === 'all') && (openId
             ? <Detail id={openId} user={user} onBack={() => setOpenId(null)} onChanged={bump} onOpen={setOpenId} version={version} />
-            : <IncidentList user={user} meta={meta} techs={techs} onOpen={setOpenId} version={version} />)}
+            : <IncidentList user={user} meta={meta} techs={techs} onOpen={setOpenId} version={version} scope={tab} />)}
         </main>
       </div>
     </div>
