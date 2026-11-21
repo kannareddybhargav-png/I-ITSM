@@ -45,6 +45,15 @@ public class Incident {
     /** 1, 2, 3... for the duplicates of one original (shown as -D1, -D2...); null for an original incident. */
     private Integer duplicateSeq;
 
+    /** Star rating (1-5) the reporter gave when confirming the resolution, with an optional written comment. */
+    private Integer rating;
+    @Column(length = 1000)
+    private String feedback;
+    private Instant ratedAt;
+    /** Technician who was assigned when a response / resolution SLA was breached (used for the technician rating penalty). */
+    private Long responseBreachTechnicianId;
+    private Long resolutionBreachTechnicianId;
+
     /** Human-readable reference, e.g. INC-P1-0008 for an original and INC-P3-0003-D1 for its first duplicate. */
     public String getReference() {
         long base = refNumber != null ? refNumber : (duplicateOfId != null ? duplicateOfId : (id == null ? 0 : id));

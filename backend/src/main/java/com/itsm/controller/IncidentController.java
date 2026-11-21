@@ -91,7 +91,21 @@ public class IncidentController {
 
     @PostMapping("/{id}/verify")
     @PreAuthorize("hasAnyRole('EMPLOYEE','ADMIN')")
-    public IncidentDto verify(@PathVariable Long id, @AuthenticationPrincipal User me) { return svc.verify(id, me); }
+    public IncidentDto verify(@PathVariable Long id, @RequestBody(required = false) @Valid FeedbackRequest r, @AuthenticationPrincipal User me) {
+        return svc.verify(id, r, me);
+    }
+
+    @PostMapping("/{id}/request-info")
+    @PreAuthorize("hasRole('TECHNICIAN')")
+    public IncidentDto requestInfo(@PathVariable Long id, @Valid @RequestBody TextRequest r, @AuthenticationPrincipal User me) {
+        return svc.requestInfo(id, r.text(), me);
+    }
+
+    @PostMapping("/{id}/info")
+    @PreAuthorize("hasAnyRole('EMPLOYEE','ADMIN')")
+    public IncidentDto provideInfo(@PathVariable Long id, @Valid @RequestBody TextRequest r, @AuthenticationPrincipal User me) {
+        return svc.provideInfo(id, r.text(), me);
+    }
 
     @PostMapping("/{id}/reopen")
     @PreAuthorize("hasAnyRole('EMPLOYEE','ADMIN')")

@@ -25,7 +25,8 @@ public final class Dtos {
     public record CreateUserRequest(@NotBlank String name, @NotBlank @Email String email,
                                     @NotBlank @Size(min = 6) String password, @NotNull Role role, Set<String> skills) {}
     public record TechUpdateRequest(Boolean available, Set<String> skills) {}
-    public record TechnicianDto(Long id, String name, String email, boolean available, Set<String> skills, long activeIncidents) {}
+    public record TechnicianDto(Long id, String name, String email, boolean available, Set<String> skills, long activeIncidents,
+                                double rating, int reviews, int slaViolations) {}
 
     public record CreateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
@@ -34,6 +35,7 @@ public final class Dtos {
     public record UpdateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
                                         @Min(1) @Max(5) int urgency) {}
+    public record FeedbackRequest(@Min(1) @Max(5) Integer rating, @Size(max = 1000) String comment) {}
     public record TextRequest(@NotBlank @Size(max = 2000) String text) {}
     public record AssignRequest(Long technicianId) {}
     public record CategoryRequest(@NotBlank String name, @Min(1) @Max(5) int criticality) {}
@@ -59,14 +61,15 @@ public final class Dtos {
                               Long technicianId, String technician, Instant createdAt, Instant acknowledgedAt,
                               Instant resolvedAt, Instant responseDeadline, Instant resolutionDeadline,
                               boolean responseViolated, boolean resolutionViolated, String resolution,
-                              Long duplicateOfId, int escalationLevel, String reference, String duplicateOfReference) {
+                              Long duplicateOfId, int escalationLevel, String reference, String duplicateOfReference,
+                              Integer rating, String feedback, Instant ratedAt) {
         /** Technicians see the priority but not how it was calculated (impact, criticality, urgency, score). */
         public IncidentDto forRole(Role role) {
             if (role != Role.TECHNICIAN) return this;
             return new IncidentDto(id, title, description, categoryId, category, serviceId, service, 0, 0, null, 0,
                     priority, status, reporterId, reporter, technicianId, technician, createdAt, acknowledgedAt,
                     resolvedAt, responseDeadline, resolutionDeadline, responseViolated, resolutionViolated, resolution,
-                    duplicateOfId, escalationLevel, reference, duplicateOfReference);
+                    duplicateOfId, escalationLevel, reference, duplicateOfReference, rating, feedback, ratedAt);
         }
 
         public static IncidentDto from(Incident i) { return from(i, null); }
@@ -81,7 +84,7 @@ public final class Dtos {
                     i.getCreatedAt(), i.getAcknowledgedAt(), i.getResolvedAt(), i.getResponseDeadline(),
                     i.getResolutionDeadline(), i.isResponseViolated(), i.isResolutionViolated(), i.getResolution(),
                     i.getDuplicateOfId(), i.getEscalationLevel() == null ? 0 : i.getEscalationLevel(),
-                    i.getReference(), duplicateOfReference);
+                    i.getReference(), duplicateOfReference, i.getRating(), i.getFeedback(), i.getRatedAt());
         }
     }
 }

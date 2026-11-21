@@ -46,3 +46,9 @@ admin@iitsm.com / Admin@123, employee@iitsm.com / Employee@123, tech1..3@iitsm.c
 ## API summary
 Auth: POST /api/auth/register, /api/auth/login, /api/auth/verify, /api/auth/resend-verification; GET /api/auth/config. Incidents: POST/GET /api/incidents (filters: status, priority, categoryId, serviceId, technicianId, reporterId, q, from), GET/PUT/DELETE /api/incidents/{id}, POST /{id}/assign|acknowledge|start|notes|resolve|verify|reopen|close, GET /{id}/history.
 Admin: /api/users, /api/technicians, /api/categories, /api/services, /api/sla/policies, /api/sla/violations, /api/config/assignment-strategy. Notifications: GET /api/notifications, POST /api/notifications/{id}/read.
+
+## Ratings, feedback and the audit log
+- When an employee confirms a resolution they must give a 1-5 star rating (a written comment is optional); the feedback is attached to the incident.
+- Technician rating = (initial rating + all employee star ratings) / (ratings + 1), minus 0.25 for every SLA breach that happened while the technician was assigned, kept between 1 and 5. Initial rating and penalty are configurable with `RATING_INITIAL` (default 4.0) and `RATING_SLA_PENALTY` (default 0.25). Technicians see their rating on their dashboard; administrators see it in Administration > People.
+- Technicians can ask the reporter for more information (also before acknowledging); the reporter answers on the incident page. Reporters can edit an incident until it is acknowledged.
+- Administration > Audit log lists every audit entry across all incidents (filters, paging, CSV export) via `GET /api/audit` (administrators only, read-only).

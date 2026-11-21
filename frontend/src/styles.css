@@ -150,3 +150,16 @@ h3 .ref { font-size: inherit; color: inherit; margin-right: 6px; }
 .tabs .count.alert { background: var(--p1); color: #fff; }
 .timer b.done { font-size: 17px; }
 .timer small { display: block; font-weight: 600; }
+
+/* ---------- ratings, feedback, info requests ---------- */
+.stars { display: inline-flex; gap: 2px; color: #d3dae2; line-height: 1; }
+.stars .on { color: #e8a317; }
+.stars.pick button { background: none; border: 0; padding: 2px; font-size: 32px; cursor: pointer; color: #d3dae2; line-height: 1; }
+.stars.pick button.on { color: #e8a317; }
+.stars.pick button:hover { transform: scale(1.1); }
+.rating-card { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.rating-card .score { text-align: center; min-width: 110px; }
+.rating-card .score b { display: block; font-size: 40px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.infobox, .ratebox, .editbox { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 14px; background: #fbfcfd; display: grid; gap: 10px; }
+.editbox h3 { font-size: 15px; }
+.pill.warnpill { background: #fff0e0; color: #8a4a05; }

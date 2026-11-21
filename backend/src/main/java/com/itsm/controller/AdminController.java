@@ -5,6 +5,7 @@ import com.itsm.entity.*;
 import com.itsm.exception.ApiException;
 import com.itsm.repository.*;
 import com.itsm.service.AssignmentService;
+import com.itsm.service.RatingService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Sort;
@@ -28,6 +29,7 @@ public class AdminController {
     private final AssignmentService assignment;
     private final PasswordEncoder encoder;
     private final NotificationRepository notifications;
+    private final RatingService ratings;
 
     // ----- users & technicians -----
     @GetMapping("/api/users")
@@ -82,8 +84,11 @@ public class AdminController {
     @PreAuthorize("hasRole('ADMIN')")
     public List<TechnicianDto> technicians() {
         return users.findByRole(Role.TECHNICIAN).stream()
-                .map(u -> new TechnicianDto(u.getId(), u.getName(), u.getEmail(), u.isAvailable(),
-                        new HashSet<>(u.getSkills()), assignment.workload(u.getId()))).toList();
+                .map(u -> {
+                    RatingService.Rating r = ratings.forTechnician(u.getId());
+                    return new TechnicianDto(u.getId(), u.getName(), u.getEmail(), u.isAvailable(),
+                            new HashSet<>(u.getSkills()), assignment.workload(u.getId()), r.score(), r.reviews(), r.slaViolations());
+                }).toList();
     }
 
     // ----- categories & services -----

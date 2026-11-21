@@ -262,7 +262,10 @@ public class IncidentService {
         requireAssignedTech(i, me);
         Instant now = Instant.now();
         i.setAcknowledgedAt(now);
-        if (i.getResponseDeadline() != null && now.isAfter(i.getResponseDeadline())) i.setResponseViolated(true);
+        if (i.getResponseDeadline() != null && now.isAfter(i.getResponseDeadline()) && !i.isResponseViolated()) {
+            i.setResponseViolated(true);
+            i.setResponseBreachTechnicianId(me.getId());
+        }
         move(i, ACKNOWLEDGED, "ACKNOWLEDGED", me, "Technician acknowledged the incident");
         return view(i, me);
     }
@@ -289,15 +292,33 @@ public class IncidentService {
         Instant now = Instant.now();
         i.setResolution(text);
         i.setResolvedAt(now);
-        if (i.getResolutionDeadline() != null && now.isAfter(i.getResolutionDeadline())) i.setResolutionViolated(true);
+        if (i.getResolutionDeadline() != null && now.isAfter(i.getResolutionDeadline()) && !i.isResolutionViolated()) {
+            i.setResolutionViolated(true);
+            i.setResolutionBreachTechnicianId(me.getId());
+        }
         move(i, RESOLVED, "RESOLVED", me, "Resolution: " + text);
         return view(i, me);
     }
 
-    public IncidentDto verify(Long id, User me) {
+    /** The reporter must rate the resolution (1-5 stars, written comment optional) when confirming it. */
+    public IncidentDto verify(Long id, FeedbackRequest r, User me) {
         Incident i = find(id);
         requireReporterOrAdmin(i, me);
-        move(i, VERIFIED, "VERIFIED", me, "Resolution verified");
+        Integer stars = r == null ? null : r.rating();
+        boolean reporter = i.getReporter().getId().equals(me.getId());
+        if ((reporter && stars == null) || (stars != null && (stars < 1 || stars > 5)))
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Please rate the resolution with 1 to 5 stars before confirming it.");
+        String comment = null;
+        if (stars != null) {
+            comment = r.comment() == null ? "" : r.comment().trim();
+            if (comment.length() > 1000) comment = comment.substring(0, 1000);
+            if (comment.isEmpty()) comment = null;
+            i.setRating(stars);
+            i.setFeedback(comment);
+            i.setRatedAt(Instant.now());
+        }
+        move(i, VERIFIED, "VERIFIED", me, stars == null ? "Resolution verified"
+                : "Resolution verified, rated " + stars + "/5" + (comment == null ? "" : ": " + comment));
         return view(i, me);
     }
 
@@ -363,5 +384,24 @@ public class IncidentService {
                 log(i, "ESCALATED_L2", null, d);
             }
         }
+    }
+
+    /** A technician can ask the reporter for details while handling the incident (including before acknowledging it). */
+    public IncidentDto requestInfo(Long id, String text, User me) {
+        Incident i = find(id);
+        requireAssignedTech(i, me);
+        if (!List.of(ASSIGNED, ACKNOWLEDGED, IN_PROGRESS).contains(i.getStatus()))
+            throw conflict("Information can only be requested while the incident is being handled");
+        log(i, "INFO_REQUESTED", me, text.trim());
+        return view(i, me);
+    }
+
+    /** The reporter answers a request or adds details on their own while the incident is still open. */
+    public IncidentDto provideInfo(Long id, String text, User me) {
+        Incident i = find(id);
+        requireReporterOrAdmin(i, me);
+        if (i.getStatus() == VERIFIED || i.getStatus() == CLOSED) throw conflict("This incident is already closed");
+        log(i, "INFO_PROVIDED", me, text.trim());
+        return view(i, me);
     }
 }

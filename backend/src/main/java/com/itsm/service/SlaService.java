@@ -35,12 +35,14 @@ public class SlaService {
         Instant now = Instant.now();
         for (Incident i : incidents.findByResponseViolatedFalseAndAcknowledgedAtIsNullAndResponseDeadlineBefore(now)) {
             i.setResponseViolated(true);
+            if (i.getTechnician() != null) i.setResponseBreachTechnicianId(i.getTechnician().getId());
             incidents.save(i);
             events.publishEvent(new IncidentEvent(i, "SLA_RESPONSE_VIOLATION", i.getStatus(), i.getStatus(), null,
                     "Response SLA breached (deadline " + i.getResponseDeadline() + ")"));
         }
         for (Incident i : incidents.findByResolutionViolatedFalseAndResolvedAtIsNullAndResolutionDeadlineBefore(now)) {
             i.setResolutionViolated(true);
+            if (i.getTechnician() != null) i.setResolutionBreachTechnicianId(i.getTechnician().getId());
             incidents.save(i);
             events.publishEvent(new IncidentEvent(i, "SLA_RESOLUTION_VIOLATION", i.getStatus(), i.getStatus(), null,
                     "Resolution SLA breached (deadline " + i.getResolutionDeadline() + ")"));

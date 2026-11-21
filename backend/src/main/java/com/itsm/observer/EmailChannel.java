@@ -9,16 +9,20 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class EmailChannel implements NotificationChannel {
-    private static final java.util.Map<String, String> SUBJECTS = java.util.Map.of(
-            "INCIDENT_CREATED", "Incident received",
-            "CRITICAL_INCIDENT", "Critical (P1) incident reported",
-            "ASSIGNED", "Incident assigned",
-            "ACKNOWLEDGED", "Incident acknowledged",
-            "RESOLVED", "Incident resolved - please verify",
-            "CLOSED", "Incident closed",
-            "SLA_VIOLATION", "SLA breached",
-            "DUPLICATE_DETECTED", "Possible duplicate incident",
-            "ESCALATION", "Incident escalated");
+    private static final java.util.Map<String, String> SUBJECTS = java.util.Map.ofEntries(
+            java.util.Map.entry("INCIDENT_CREATED", "Incident received"),
+            java.util.Map.entry("CRITICAL_INCIDENT", "Critical (P1) incident reported"),
+            java.util.Map.entry("ASSIGNED", "Incident assigned"),
+            java.util.Map.entry("ACKNOWLEDGED", "Incident acknowledged"),
+            java.util.Map.entry("RESOLVED", "Incident resolved - please verify"),
+            java.util.Map.entry("CLOSED", "Incident closed"),
+            java.util.Map.entry("SLA_VIOLATION", "SLA breached"),
+            java.util.Map.entry("DUPLICATE_DETECTED", "Possible duplicate incident"),
+            java.util.Map.entry("ESCALATION", "Incident escalated"),
+            java.util.Map.entry("INCIDENT_UPDATED", "Incident updated"),
+            java.util.Map.entry("INFO_REQUESTED", "More information needed"),
+            java.util.Map.entry("INFO_PROVIDED", "Information added"),
+            java.util.Map.entry("INCIDENT_VERIFIED", "Incident confirmed as fixed"));
 
     private final MailService mail;
 

@@ -229,12 +229,13 @@ const scopeHint = (role, scope) => {
 function Stats({ version, scope }) {
   const [all, setAll] = useState([]);
   useEffect(() => { api('/api/incidents?scope=' + scope).then(setAll).catch(() => {}); }, [version, scope]);
-  const open = all.filter((i) => !['VERIFIED', 'CLOSED'].includes(i.status));
+  const open = all.filter((i) => OPEN_STATUSES.includes(i.status));
   const tiles = [
     ['Open incidents', open.length, false],
-    ['Critical (P1 and P2)', open.filter((i) => ['P1', 'P2'].includes(i.priority)).length, true],
+    ['Resolved incidents', all.filter((i) => DONE_STATUSES.includes(i.status)).length, false],
+    ['Critical open (P1 and P2)', open.filter((i) => ['P1', 'P2'].includes(i.priority)).length, true],
     ['SLA breached', all.filter((i) => i.responseViolated || i.resolutionViolated).length, true],
-    ['Escalated', open.filter((i) => i.escalationLevel > 0).length, true],
+    ['Escalated open', open.filter((i) => i.escalationLevel > 0).length, true],
   ];
   return <div className="stats">{tiles.map(([t, n, hot]) => <div key={t} className={'stat' + (hot && n > 0 ? ' hot' : '')}><span>{t}</span><b>{n}</b></div>)}</div>;
 }
@@ -314,6 +315,12 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
   const [techs, setTechs] = useState([]);
   const [techId, setTechId] = useState('');
   const [text, setText] = useState('');
+  const [infoText, setInfoText] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState('');
   const [err, setErr] = useState('');
   const load = useCallback(async () => {
     try {
@@ -328,13 +335,27 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
   const act = async (path, body) => {
     if (busy.current) return;
     busy.current = true;
-    try { setErr(''); await api(`/api/incidents/${id}/${path}`, { method: 'POST', body }); setText(''); await load(); onChanged(); }
+    try { setErr(''); await api(`/api/incidents/${id}/${path}`, { method: 'POST', body }); setText(''); setInfoText(''); setConfirming(false); setRating(0); setComment(''); await load(); onChanged(); }
     catch (e) { setErr(e.message); }
     finally { busy.current = false; }
   };
   if (!i) return <div className="card">{err ? <div className="error">{err}</div> : 'Loading…'}</div>;
   const isTech = user.role === 'TECHNICIAN' && i.technicianId === user.id;
   const reporterOrAdmin = user.role === 'ADMIN' || user.role === 'EMPLOYEE';
+  const isReporter = i.reporterId === user.id;
+  const canEdit = (user.role === 'ADMIN' || isReporter) && ['NEW', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED'].includes(i.status);
+  const thread = hist.filter((h) => h.action === 'INFO_REQUESTED' || h.action === 'INFO_PROVIDED');
+  const lastInfo = thread.length ? thread[thread.length - 1] : null;
+  const waitingForReply = lastInfo && lastInfo.action === 'INFO_REQUESTED';
+  const startEdit = () => { setEdit({ title: i.title, description: i.description, urgency: i.urgency || 3 }); setEditing(true); };
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    if (busy.current) return;
+    busy.current = true;
+    try { setErr(''); await api('/api/incidents/' + id, { method: 'PUT', body: { ...edit, urgency: +edit.urgency } }); setEditing(false); await load(); onChanged(); }
+    catch (x) { setErr(x.message); }
+    finally { busy.current = false; }
+  };
   return (
     <>
       <button className="btn alt small" onClick={onBack} style={{ marginBottom: 14 }}>Back to incidents</button>
@@ -356,6 +377,18 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
             </dl>
             {err && <div className="error">{err}</div>}
 
+            {editing && edit && (
+              <form className="editbox" onSubmit={saveEdit}>
+                <h3>Edit incident</h3>
+                <label>Title<input required maxLength={200} value={edit.title} onChange={(e) => setEdit({ ...edit, title: e.target.value })} /></label>
+                <label>Description<textarea required maxLength={2000} value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></label>
+                <label>Urgency<select value={edit.urgency} onChange={(e) => setEdit({ ...edit, urgency: e.target.value })}>{URGENCY.map((u) => <option key={u.v} value={u.v}>{u.v} - {u.t}: {u.d}</option>)}</select></label>
+                <p className="hint" style={{ margin: 0 }}>The priority and SLA deadlines are recalculated when you save.</p>
+                <div className="actions" style={{ marginTop: 0 }}><button className="btn">Save changes</button><button type="button" className="btn alt" onClick={() => setEditing(false)}>Cancel</button></div>
+              </form>
+            )}
+            {canEdit && !editing && <div className="actions"><button className="btn alt small" onClick={startEdit}>Edit incident</button><span className="hint">You can edit it until a technician acknowledges it.</span></div>}
+
             {user.role === 'ADMIN' && ['PRIORITIZED', 'ASSIGNED'].includes(i.status) && (
               <div className="row" style={{ marginTop: 14 }}>
                 <label>Assign technician<select value={techId} onChange={(e) => setTechId(e.target.value)}><option value="">Use the active strategy</option>{techs.map((t) => <option key={t.id} value={t.id} disabled={!t.available}>{t.name} ({t.activeIncidents} active){t.available ? '' : ' - unavailable'}</option>)}</select></label>
@@ -364,6 +397,12 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
             )}
             {isTech && i.status === 'ASSIGNED' && <div className="actions"><button className="btn" onClick={() => act('acknowledge')}>Acknowledge</button></div>}
             {isTech && i.status === 'ACKNOWLEDGED' && <div className="actions"><button className="btn" onClick={() => act('start')}>Start investigation</button></div>}
+            {isTech && ['ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS'].includes(i.status) && (
+              <div className="infobox">
+                <label>Need more details from the reporter?<textarea placeholder="Write your question here" value={infoText} maxLength={2000} onChange={(e) => setInfoText(e.target.value)} /></label>
+                <div className="actions"><button className="btn alt" disabled={!infoText.trim()} onClick={() => act('request-info', { text: infoText })}>Ask the reporter for information</button></div>
+              </div>
+            )}
             {isTech && ['ACKNOWLEDGED', 'IN_PROGRESS'].includes(i.status) && (
               <>
                 <label style={{ marginTop: 14 }}>Investigation note or resolution details<textarea value={text} onChange={(e) => setText(e.target.value)} /></label>
@@ -373,14 +412,49 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
                 </div>
               </>
             )}
-            {reporterOrAdmin && i.status === 'RESOLVED' && (
-              <div className="actions"><button className="btn" onClick={() => act('verify')}>Confirm it is fixed</button><button className="btn alt" onClick={() => act('reopen')}>Not fixed, reopen</button></div>
+            {reporterOrAdmin && !['VERIFIED', 'CLOSED'].includes(i.status) && (
+              <div className="infobox">
+                {waitingForReply && <div className="banner info" style={{ margin: '0 0 10px' }}><b>The technician asked:</b> {lastInfo.description}</div>}
+                <label>{waitingForReply ? 'Your reply' : 'Add more information (optional)'}<textarea value={infoText} maxLength={2000} onChange={(e) => setInfoText(e.target.value)} /></label>
+                <div className="actions"><button className="btn alt" disabled={!infoText.trim()} onClick={() => act('info', { text: infoText })}>{waitingForReply ? 'Send reply' : 'Add information'}</button></div>
+              </div>
             )}
+            {reporterOrAdmin && i.status === 'RESOLVED' && (confirming ? (
+              <div className="ratebox">
+                <div className="legend">How well was it resolved? A star rating is required.</div>
+                <StarPicker value={rating} onChange={setRating} />
+                <label style={{ marginTop: 10 }}>Comments (optional)<textarea value={comment} maxLength={1000} onChange={(e) => setComment(e.target.value)} /></label>
+                <div className="actions"><button className="btn" disabled={!rating} onClick={() => act('verify', { rating, comment })}>Confirm and send rating</button><button className="btn alt" onClick={() => setConfirming(false)}>Cancel</button></div>
+              </div>
+            ) : (
+              <div className="actions"><button className="btn" onClick={() => (isReporter ? setConfirming(true) : act('verify'))}>Confirm it is fixed</button><button className="btn alt" onClick={() => act('reopen')}>Not fixed, reopen</button></div>
+            ))}
             {reporterOrAdmin && i.status === 'VERIFIED' && <div className="actions"><button className="btn" onClick={() => act('close')}>Close incident</button></div>}
             {user.role === 'ADMIN' && (
               <div className="actions"><button className="btn danger small" onClick={async () => { if (confirm('Delete this incident?')) { await api('/api/incidents/' + id, { method: 'DELETE' }); onChanged(); onBack(); } }}>Delete incident</button></div>
             )}
           </div>
+
+          {i.rating != null && (
+            <div className="card">
+              <h3>Employee feedback</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}><Stars value={i.rating} size={22} /><b>{i.rating} / 5</b></div>
+              {i.feedback ? <p style={{ margin: '8px 0 0' }}>{i.feedback}</p> : <p className="hint" style={{ margin: '8px 0 0' }}>No written comment.</p>}
+              <p className="hint" style={{ margin: '6px 0 0' }}>Given on {fmt(i.ratedAt)}</p>
+            </div>
+          )}
+
+          {thread.length > 0 && (
+            <div className="card">
+              <h3>Questions and answers</h3>
+              <p className="sub">Information requested by the technician and added by the reporter.</p>
+              <ul className="timeline">
+                {thread.map((h, k) => (
+                  <li key={k}><b>{h.action === 'INFO_REQUESTED' ? 'Question' : 'Answer'}</b> from {h.actor}<small>{fmt(h.timestamp)}</small><div>{h.description}</div></li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {user.role !== 'TECHNICIAN' && i.criticality != null && (
             <div className="card">
@@ -427,6 +501,111 @@ function Detail({ id, user, onBack, onChanged, onOpen, version }) {
   );
 }
 
+/* ---------------- ratings & audit log ---------------- */
+const Stars = ({ value, size = 18 }) => (
+  <span className="stars" style={{ fontSize: size }} aria-label={`${value} out of 5`}>
+    {[1, 2, 3, 4, 5].map((n) => <span key={n} className={n <= Math.round(value) ? 'on' : ''}>★</span>)}
+  </span>
+);
+
+function StarPicker({ value, onChange }) {
+  return (
+    <div className="stars pick" role="radiogroup" aria-label="Rating">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button type="button" key={n} className={n <= value ? 'on' : ''} onClick={() => onChange(n)} aria-label={`${n} star${n > 1 ? 's' : ''}`}>★</button>
+      ))}
+    </div>
+  );
+}
+
+function RatingCard({ version }) {
+  const [r, setR] = useState(null);
+  useEffect(() => { api('/api/ratings/me').then(setR).catch(() => {}); }, [version]);
+  if (!r) return null;
+  return (
+    <div className="card rating-card">
+      <div className="score"><b>{r.score.toFixed(2)}</b><Stars value={r.score} size={22} /></div>
+      <div>
+        <h3>Your rating</h3>
+        <p className="sub" style={{ margin: 0 }}>
+          The average of your starting rating ({r.initial.toFixed(1)}) and {r.reviews} employee rating{r.reviews === 1 ? '' : 's'} is {r.average.toFixed(2)}.
+          {r.slaViolations > 0 ? ` ${r.penalty.toFixed(2)} was deducted for ${r.slaViolations} SLA violation${r.slaViolations === 1 ? '' : 's'}.` : ' You have no SLA violations.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const AUDIT_ACTIONS = ['CREATED', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED', 'REASSIGNED', 'ACKNOWLEDGED', 'INVESTIGATION_STARTED', 'NOTE_ADDED',
+  'INFO_REQUESTED', 'INFO_PROVIDED', 'UPDATED', 'PRIORITY_CHANGED', 'RESOLVED', 'VERIFIED', 'REOPENED', 'CLOSED', 'DUPLICATE_DETECTED',
+  'ESCALATED_L1', 'ESCALATED_L2', 'SLA_RESPONSE_VIOLATION', 'SLA_RESOLUTION_VIOLATION', 'DELETED'];
+const actionTone = (a) => (/ESCALATED|VIOLATION|DUPLICATE|DELETED/.test(a) ? 'warnpill' : /RESOLVED|VERIFIED|CLOSED/.test(a) ? 'done' : /NOTE|INFO/.test(a) ? 'wait' : 'active');
+
+function AuditLogView({ onOpenIncident, version }) {
+  const [f, setF] = useState({ action: '', actor: '', incident: '', from: '', to: '' });
+  const [page, setPage] = useState(0);
+  const [data, setData] = useState({ items: [], page: 0, totalPages: 0, total: 0 });
+  const [err, setErr] = useState('');
+  const query = (extra) => {
+    const p = new URLSearchParams();
+    Object.entries(f).forEach(([k, v]) => v && p.set(k, v));
+    Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+    return '/api/audit?' + p;
+  };
+  useEffect(() => {
+    api(query({ page, size: 25 })).then((d) => { setErr(''); setData(d); }).catch((e) => setErr(e.message));
+  }, [f, page, version]);
+  const set = (k) => (e) => { setPage(0); setF({ ...f, [k]: e.target.value }); };
+  const exportCsv = async () => {
+    try {
+      const d = await api(query({ page: 0, size: 1000 }));
+      const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const rows = [['Time', 'Incident', 'Action', 'By', 'Old status', 'New status', 'Description'],
+        ...d.items.map((a) => [a.timestamp, a.reference, a.action, a.actor, a.oldStatus, a.newStatus, a.description])];
+      const blob = new Blob([rows.map((r) => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'audit-log.csv'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setErr(e.message); }
+  };
+  return (
+    <div className="card">
+      <h3>Audit log</h3>
+      <p className="sub">Every important action on every incident, newest first. Entries cannot be edited or deleted.</p>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <label>Action<select value={f.action} onChange={set('action')}><option value="">Any</option>{AUDIT_ACTIONS.map((a) => <option key={a} value={a}>{actionLabel(a)}</option>)}</select></label>
+        <label>Done by<input placeholder="Name" value={f.actor} onChange={set('actor')} /></label>
+        <label>Incident<input placeholder="ID or INC-P1-0008" value={f.incident} onChange={set('incident')} /></label>
+        <label>From<input type="date" value={f.from} onChange={set('from')} /></label>
+        <label>To<input type="date" value={f.to} onChange={set('to')} /></label>
+        <button className="btn alt" style={{ flex: '0 0 auto' }} onClick={exportCsv}>Export CSV</button>
+      </div>
+      {err && <div className="error">{err}</div>}
+      <div className="table-wrap"><table>
+        <thead><tr><th>Time</th><th>Incident</th><th>Action</th><th>By</th><th>Status change</th><th>Details</th></tr></thead>
+        <tbody>
+          {data.items.map((a) => (
+            <tr key={a.id}>
+              <td style={{ whiteSpace: 'nowrap' }}>{fmtShort(a.timestamp)}</td>
+              <td className="ref">{a.reference.includes('(deleted)') ? a.reference : <button className="linkbtn" onClick={() => onOpenIncident(a.incidentId)}>{a.reference}</button>}</td>
+              <td><span className={'pill ' + actionTone(a.action)}>{actionLabel(a.action)}</span></td>
+              <td>{a.actor}</td>
+              <td>{a.oldStatus && a.oldStatus !== a.newStatus ? `${label(a.oldStatus)} → ${label(a.newStatus)}` : a.newStatus && !a.oldStatus ? `→ ${label(a.newStatus)}` : '-'}</td>
+              <td>{a.description || '-'}</td>
+            </tr>
+          ))}
+          {data.items.length === 0 && <tr><td colSpan={6} className="muted">No audit entries match these filters.</td></tr>}
+        </tbody></table></div>
+      <div className="actions" style={{ alignItems: 'center' }}>
+        <button className="btn alt small" disabled={page <= 0} onClick={() => setPage(page - 1)}>Previous</button>
+        <span className="hint">Page {data.totalPages === 0 ? 0 : data.page + 1} of {data.totalPages} ({data.total} entries)</span>
+        <button className="btn alt small" disabled={page + 1 >= data.totalPages} onClick={() => setPage(page + 1)}>Next</button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- administration ---------------- */
 function WeightTable({ title, sub, rows, setRows, saveUrl, onSaved, run }) {
   return (
@@ -443,7 +622,7 @@ function WeightTable({ title, sub, rows, setRows, saveUrl, onSaved, run }) {
   );
 }
 
-function AdminTools({ meta, onMetaChange, version }) {
+function AdminTools({ meta, onMetaChange, version, onOpenIncident }) {
   const [section, setSection] = useState('settings');
   const [users, setUsers] = useState([]);
   const [techs, setTechs] = useState([]);
@@ -480,8 +659,11 @@ function AdminTools({ meta, onMetaChange, version }) {
         <button className={section === 'settings' ? 'on' : ''} onClick={() => setSection('settings')}>Settings</button>
         <button className={section === 'people' ? 'on' : ''} onClick={() => setSection('people')}>People {pending.length > 0 && <span className="count alert">{pending.length} to verify</span>}</button>
         <button className={section === 'monitoring' ? 'on' : ''} onClick={() => setSection('monitoring')}>Monitoring</button>
+        <button className={section === 'audit' ? 'on' : ''} onClick={() => setSection('audit')}>Audit log</button>
       </div>
       {err && <div className="error">{err}</div>}
+
+      {section === 'audit' && <AuditLogView onOpenIncident={onOpenIncident} version={version} />}
 
       {section === 'settings' && (
         <>
@@ -572,13 +754,14 @@ function AdminTools({ meta, onMetaChange, version }) {
           <div className="card">
             <h3>Technicians</h3>
             <div className="table-wrap" style={{ marginTop: 10 }}><table>
-              <thead><tr><th>Name</th><th>Email</th><th>Skills</th><th>Active incidents</th><th>Availability</th></tr></thead>
+              <thead><tr><th>Name</th><th>Email</th><th>Skills</th><th>Active incidents</th><th>Rating</th><th>Availability</th></tr></thead>
               <tbody>
                 {techs.map((t) => (
                   <tr key={t.id}><td>{t.name}</td><td>{t.email}</td><td>{[...t.skills].join(', ') || '-'}</td><td>{t.activeIncidents}</td>
+                    <td><b>{t.rating.toFixed(2)}</b> <span className="hint">({t.reviews} review{t.reviews === 1 ? '' : 's'}, {t.slaViolations} SLA violation{t.slaViolations === 1 ? '' : 's'})</span></td>
                     <td><button className="btn alt small" onClick={() => run(() => api(`/api/users/${t.id}/technician`, { method: 'PUT', body: { available: !t.available } }))}>{t.available ? 'Available (pause)' : 'Unavailable (enable)'}</button></td></tr>
                 ))}
-                {techs.length === 0 && <tr><td colSpan={5} className="muted">No technicians yet.</td></tr>}
+                {techs.length === 0 && <tr><td colSpan={6} className="muted">No technicians yet.</td></tr>}
               </tbody></table></div>
           </div>
 
@@ -673,7 +856,7 @@ export default function App() {
       if (u.verified !== user.verified || u.role !== user.role) { localStorage.setItem('user', JSON.stringify(u)); setUser(u); }
     }).catch(() => {});
     refreshMe();
-    const t = setInterval(() => { bump(); refreshMe(); }, 20000);
+    const t = setInterval(() => { bump(); refreshMe(); }, 10000);
     return () => clearInterval(t);
   }, [user, loadMeta]);
   if (!user) return <Login onAuth={setUser} />;
@@ -701,7 +884,8 @@ export default function App() {
         <main>
           {unverified && <div className="banner warn" style={{ marginTop: 0 }}>Your account is waiting for administrator verification. You can look around, but you cannot report incidents until an administrator verifies you. This page updates by itself once that happens.</div>}
           {tab === 'report' && !unverified && <ReportForm meta={meta} onDone={(id) => { bump(); setTab('mine'); setOpenId(id); }} />}
-          {tab === 'admin' && <AdminTools meta={meta} onMetaChange={loadMeta} version={version} />}
+          {tab === 'admin' && <AdminTools meta={meta} onMetaChange={loadMeta} version={version} onOpenIncident={(id) => { setTab('all'); setOpenId(id); }} />}
+          {tab === 'mine' && user.role === 'TECHNICIAN' && !openId && <RatingCard version={version} />}
           {(tab === 'mine' || tab === 'all') && (openId
             ? <Detail id={openId} user={user} onBack={() => setOpenId(null)} onChanged={bump} onOpen={setOpenId} version={version} />
             : <IncidentList user={user} meta={meta} techs={techs} onOpen={setOpenId} version={version} scope={tab} />)}
