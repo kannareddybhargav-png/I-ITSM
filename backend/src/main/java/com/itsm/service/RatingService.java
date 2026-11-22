@@ -5,11 +5,13 @@ import com.itsm.repository.IncidentRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import java.time.Instant;
 import java.util.List;
 
 /**
  * Technician rating = (initial rating + all star ratings given by employees) / (number of ratings + 1),
  * minus a penalty for every SLA breach that happened while the technician was assigned, kept between 1 and 5.
+ * Breaches are counted live: a deadline that has just passed counts before the scheduled SLA monitor flags it.
  * The initial rating counts as one rating, so a single review cannot swing a new technician to an extreme.
  */
 @Service
@@ -23,7 +25,13 @@ public class RatingService {
 
     public Rating forTechnician(Long technicianId) {
         List<Integer> stars = incidents.findByTechnicianIdAndRatingNotNull(technicianId).stream().map(Incident::getRating).toList();
-        long violations = incidents.countByResponseBreachTechnicianId(technicianId) + incidents.countByResolutionBreachTechnicianId(technicianId);
+        Instant now = Instant.now();
+        long violations = incidents.countByResponseBreachTechnicianId(technicianId)
+                + incidents.countByResolutionBreachTechnicianId(technicianId)
+                + incidents.countByTechnicianIdAndResponseViolatedTrueAndResponseBreachTechnicianIdIsNull(technicianId)
+                + incidents.countByTechnicianIdAndResolutionViolatedTrueAndResolutionBreachTechnicianIdIsNull(technicianId)
+                + incidents.countByTechnicianIdAndResponseViolatedFalseAndAcknowledgedAtIsNullAndResponseDeadlineBefore(technicianId, now)
+                + incidents.countByTechnicianIdAndResolutionViolatedFalseAndResolvedAtIsNullAndResolutionDeadlineBefore(technicianId, now);
         return compute(stars, violations, initial, slaPenalty);
     }
 

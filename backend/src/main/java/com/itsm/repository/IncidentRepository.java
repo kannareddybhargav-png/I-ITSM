@@ -20,6 +20,12 @@ public interface IncidentRepository extends JpaRepository<Incident, Long>, JpaSp
     List<Incident> findByTechnicianIdAndRatingNotNull(Long technicianId);
     long countByResponseBreachTechnicianId(Long technicianId);
     long countByResolutionBreachTechnicianId(Long technicianId);
+    // Breaches flagged before they were attributed to anyone (older rows, or flagged while unassigned) count for the current technician.
+    long countByTechnicianIdAndResponseViolatedTrueAndResponseBreachTechnicianIdIsNull(Long technicianId);
+    long countByTechnicianIdAndResolutionViolatedTrueAndResolutionBreachTechnicianIdIsNull(Long technicianId);
+    // Deadlines that have passed but the 30-second SLA monitor has not flagged yet.
+    long countByTechnicianIdAndResponseViolatedFalseAndAcknowledgedAtIsNullAndResponseDeadlineBefore(Long technicianId, Instant now);
+    long countByTechnicianIdAndResolutionViolatedFalseAndResolvedAtIsNullAndResolutionDeadlineBefore(Long technicianId, Instant now);
     long countByRefNumberAndDuplicateSeqNotNull(Long refNumber);
     List<Incident> findByRefNumberIsNullOrderByIdAsc();
     Optional<Incident> findFirstByReporterIdAndTitleAndDescriptionAndCreatedAtAfter(Long reporterId, String title, String description, Instant since);
