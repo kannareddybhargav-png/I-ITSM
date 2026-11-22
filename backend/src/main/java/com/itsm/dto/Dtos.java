@@ -31,10 +31,12 @@ public final class Dtos {
     public record CreateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
                                         @NotNull Long categoryId, @NotNull Long serviceId,
-                                        @Min(1) @Max(5) int urgency) {}
+                                        @Min(1) @Max(5) int urgency,
+                                        @Min(1) @Max(1000000) Integer affectedUsers) {}
     public record UpdateIncidentRequest(@NotBlank @Size(max = 200) String title,
                                         @NotBlank @Size(max = 2000) String description,
-                                        @Min(1) @Max(5) int urgency) {}
+                                        @Min(1) @Max(5) int urgency,
+                                        @Min(1) @Max(1000000) Integer affectedUsers) {}
     public record FeedbackRequest(@Min(1) @Max(5) Integer rating, @Size(max = 1000) String comment) {}
     public record TextRequest(@NotBlank @Size(max = 2000) String text) {}
     public record AssignRequest(Long technicianId) {}
@@ -62,14 +64,14 @@ public final class Dtos {
                               Instant resolvedAt, Instant responseDeadline, Instant resolutionDeadline,
                               boolean responseViolated, boolean resolutionViolated, String resolution,
                               Long duplicateOfId, int escalationLevel, String reference, String duplicateOfReference,
-                              Integer rating, String feedback, Instant ratedAt) {
+                              Integer rating, String feedback, Instant ratedAt, int affectedUsers) {
         /** Technicians see the priority but not how it was calculated (impact, criticality, urgency, score). */
         public IncidentDto forRole(Role role) {
             if (role != Role.TECHNICIAN) return this;
             return new IncidentDto(id, title, description, categoryId, category, serviceId, service, 0, 0, null, 0,
                     priority, status, reporterId, reporter, technicianId, technician, createdAt, acknowledgedAt,
                     resolvedAt, responseDeadline, resolutionDeadline, responseViolated, resolutionViolated, resolution,
-                    duplicateOfId, escalationLevel, reference, duplicateOfReference, rating, feedback, ratedAt);
+                    duplicateOfId, escalationLevel, reference, duplicateOfReference, rating, feedback, ratedAt, affectedUsers);
         }
 
         public static IncidentDto from(Incident i) { return from(i, null); }
@@ -84,7 +86,8 @@ public final class Dtos {
                     i.getCreatedAt(), i.getAcknowledgedAt(), i.getResolvedAt(), i.getResponseDeadline(),
                     i.getResolutionDeadline(), i.isResponseViolated(), i.isResolutionViolated(), i.getResolution(),
                     i.getDuplicateOfId(), i.getEscalationLevel() == null ? 0 : i.getEscalationLevel(),
-                    i.getReference(), duplicateOfReference, i.getRating(), i.getFeedback(), i.getRatedAt());
+                    i.getReference(), duplicateOfReference, i.getRating(), i.getFeedback(), i.getRatedAt(),
+                    Math.max(1, i.getAffectedUsers()));
         }
     }
 }

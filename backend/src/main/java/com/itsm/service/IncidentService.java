@@ -169,6 +169,7 @@ public class IncidentService {
         i.setCategory(c);
         i.setService(s);
         i.setUrgency(r.urgency());
+        i.setAffectedUsers(r.affectedUsers() == null ? 1 : r.affectedUsers());
         i.setReporter(me);
         i.setCreatedAt(Instant.now());
         i.setStatus(NEW);
@@ -194,7 +195,9 @@ public class IncidentService {
         events.publishEvent(new IncidentEvent(i, "CREATED", null, NEW, me, "Incident reported: " + i.getTitle()));
         move(i, CLASSIFIED, "CLASSIFIED", null, "Category: " + c.getName() + ", service: " + s.getName());
         move(i, PRIORITIZED, "PRIORITIZED", null, "Service impact " + i.getImpact() + " x category criticality "
-                + i.getCriticality() + " x urgency " + i.getUrgency() + " = " + i.getScore() + " -> " + i.getPriority());
+                + i.getCriticality() + " x urgency " + i.getUrgency()
+                + (i.getAffectedUsers() > 1 ? ", " + i.getAffectedUsers() + " users affected" : "")
+                + " = " + i.getScore() + " -> " + i.getPriority());
 
         // A technician already working on the original is preferred; otherwise the active strategy decides.
         User preferred = (original != null && original.getTechnician() != null && original.getTechnician().isAvailable())
@@ -223,6 +226,7 @@ public class IncidentService {
         i.setTitle(r.title().trim());
         i.setDescription(r.description().trim());
         i.setUrgency(r.urgency());
+        if (r.affectedUsers() != null) i.setAffectedUsers(r.affectedUsers());
         Priority before = i.getPriority();
         prioritize(i);
         incidents.save(i);

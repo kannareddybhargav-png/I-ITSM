@@ -42,6 +42,7 @@ public class NotificationListener {
                 if (tech != null) to.add(tech);
                 send(to, "SLA_VIOLATION", ref + ": " + e.description());
             }
+            case "SLA_RESPONSE_WARNING", "SLA_RESOLUTION_WARNING" -> send(adminsAnd(tech), "SLA_WARNING", ref + ": " + e.description());
             case "DUPLICATE_DETECTED" -> send(adminsAnd(tech), "DUPLICATE_DETECTED", ref + ": " + e.description());
             case "ESCALATED_L1", "ESCALATED_L2" -> send(adminsAnd(tech), "ESCALATION", ref + ": " + e.description());
             case "UPDATED" -> { if (tech != null) send(List.of(tech), "INCIDENT_UPDATED", ref + " was edited."); }

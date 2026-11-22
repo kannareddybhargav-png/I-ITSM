@@ -22,6 +22,7 @@ Tables are created automatically on first start (`spring.jpa.hibernate.ddl-auto=
 | MAIL_FROM | sender shown on emails | I-ITSM Service Desk <no-reply@iitsm.local> |
 | MAIL_STARTTLS | use STARTTLS | true |
 | EMAIL_VERIFICATION | new self-registered employees must click an emailed link before signing in | true |
+| SLA_WARNING_PERCENT | early SLA warning once this share (%) of a deadline window is used | 80 |
 | VERIFICATION_HOURS | how long the confirmation link is valid | 24 |
 | FRONTEND_URL | used to build the confirmation link | http://localhost:5173 |
 
@@ -31,21 +32,21 @@ Frontend: `VITE_API_URL` = backend base URL.
 admin@iitsm.com / Admin@123, employee@iitsm.com / Employee@123, tech1..3@iitsm.com / Tech@123
 
 ## Design decisions
-- Priority score = service impact weight x category criticality weight x urgency (each 1-5, so 1-125). Only urgency is chosen by the employee; admins edit the service and category weights. P1 >= 75, P2 >= 40, P3 >= 15, else P4.
+- Priority score = service impact weight x category criticality weight x urgency (each 1-5, so 1-125), then scaled by the number of affected users (x1.2 from 10 users, x1.5 from 100, capped at 125). Only urgency and affected users are chosen by the employee; admins edit the service and category weights. P1 >= 75, P2 >= 40, P3 >= 15, else P4.
 - Duplicate detection: an open incident from the last 48 hours is a possible duplicate when it affects the same service and shares a keyword, or is in the same category and shares two keywords. The new incident is linked, admins and the technician are notified, and the technician already handling the original is preferred.
 - Escalation (checked every 30 s, P1 and P2 only): level 1 when the response deadline passes without acknowledgement (administrators alerted), level 2 after a second response window (escalated to IT management and reassigned to another available technician).
-- SLA clock runs 24x7 from creation. Defaults (minutes, response/resolution): P1 5/30, P2 15/120, P3 60/480, P4 240/1440. Editable by admin.
+- SLA clock runs 24x7 from creation. Every 30 s the monitor also sends an early warning (in-app + email to administrators and the technician) once 80% of a response or resolution window is used (SLA_WARNING_PERCENT), before the deadline is breached. Defaults (minutes, response/resolution): P1 5/30, P2 15/120, P3 60/480, P4 240/1440. Editable by admin.
 - Assignment strategies (admin selectable): SKILL_BASED and LOAD_BASED. If no technician fits, the incident stays PRIORITIZED for manual assignment.
 - Patterns: Strategy (priority, assignment), State (`IncidentStatus` transitions), Observer (`IncidentEvent` -> audit + notification listeners).
 - Incident IDs: `INC-<priority>-<number>`, e.g. `INC-P1-0008`. A detected duplicate shares the number of the incident it duplicates and gets a suffix: `INC-P3-0003-D1`, `INC-P3-0003-D2`. The priority part follows the current priority. Search also accepts an ID. Existing incidents are given IDs on startup.
-- Notifications: in-app (database) and email. Email is sent over SMTP when MAIL_HOST is set, otherwise it is only written to the server log (`[SIMULATED EMAIL]`). Sending is asynchronous; a failed email is logged and never blocks the incident.
+- Notifications: in-app (database) and email. Email is sent over SMTP when MAIL_HOST is set (EmailChannel), otherwise SimulatedEmailChannel writes it once to the server log (`[SIMULATED EMAIL]`). Sending is asynchronous; a failed email is logged and never blocks the incident.
 - Email verification (EMAIL_VERIFICATION=true): self-registration sends a confirmation link (`FRONTEND_URL/?verify=<token>`); sign-in is refused until it is clicked, and a new link can be requested from the sign-in screen. Accounts created by an administrator, seeded accounts and accounts that existed before the feature are treated as verified.
 - Lifecycle: NEW > CLASSIFIED > PRIORITIZED > ASSIGNED > ACKNOWLEDGED > IN_PROGRESS > RESOLVED > VERIFIED > CLOSED (RESOLVED can be reopened to IN_PROGRESS).
-- The assignment strategy choice is held in memory and resets to SKILL_BASED when the backend restarts.
+- The assignment strategy choice is stored in the database (`app_setting` table) and restored on startup.
 
 ## API summary
 Auth: POST /api/auth/register, /api/auth/login, /api/auth/verify, /api/auth/resend-verification; GET /api/auth/config. Incidents: POST/GET /api/incidents (filters: status, priority, categoryId, serviceId, technicianId, reporterId, q, from), GET/PUT/DELETE /api/incidents/{id}, POST /{id}/assign|acknowledge|start|notes|resolve|verify|reopen|close, GET /{id}/history.
-Admin: /api/users, /api/technicians, /api/categories, /api/services, /api/sla/policies, /api/sla/violations, /api/config/assignment-strategy. Notifications: GET /api/notifications, POST /api/notifications/{id}/read.
+Admin: /api/users, /api/technicians, /api/categories, /api/services, /api/sla/policies, /api/sla/violations, /api/config/assignment-strategy. Notifications: GET /api/notifications, POST /api/notifications/{id}/read. Reports (admin): GET /api/reports/summary (overview, service analysis, category analysis, priority distribution, status breakdown, technician workload).
 
 ## Ratings, feedback and the audit log
 - When an employee confirms a resolution they must give a 1-5 star rating (a written comment is optional); the feedback is attached to the incident.

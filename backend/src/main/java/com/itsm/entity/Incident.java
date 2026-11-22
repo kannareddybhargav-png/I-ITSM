@@ -53,6 +53,9 @@ public class Incident {
     /** Technician who was assigned when a response / resolution SLA was breached (used for the technician rating penalty). */
     private Long responseBreachTechnicianId;
     private Long resolutionBreachTechnicianId;
+    /** Set once the early SLA warning has been sent (null for rows created before warnings existed). */
+    private Boolean responseWarned;
+    private Boolean resolutionWarned;
 
     /** Human-readable reference, e.g. INC-P1-0008 for an original and INC-P3-0003-D1 for its first duplicate. */
     public String getReference() {

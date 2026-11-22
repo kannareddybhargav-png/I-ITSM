@@ -289,3 +289,15 @@ h3 .ref { font-size: inherit; color: inherit; margin-right: 6px; }
   .rating-card { grid-template-columns: 1fr; } .rating-score { border-right: 0; padding-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
   .rating-parts { grid-template-columns: 1fr; }
 }
+
+/* ---------- reports ---------- */
+.report-title { margin: 4px 0 12px; font-size: 16px; }
+.report-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.hbar { display: flex; align-items: center; gap: 8px; }
+.hbar i { display: block; height: 10px; min-width: 2px; border-radius: 5px; background: var(--brand); }
+.hbar span { font-variant-numeric: tabular-nums; font-weight: 600; }
+.statusbar { display: flex; height: 28px; border-radius: 8px; overflow: hidden; margin: 10px 0 12px; gap: 2px; }
+.statusbar .seg { display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; white-space: nowrap; overflow: hidden; }
+.statusbar .seg.wait { background: #8a96a3; } .statusbar .seg.active { background: var(--p3); } .statusbar .seg.done { background: var(--ok); } .statusbar .seg.closed { background: #475569; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
+.sla-box small.warn { display: block; margin-top: 2px; }

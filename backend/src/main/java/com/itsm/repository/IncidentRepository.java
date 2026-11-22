@@ -29,5 +29,8 @@ public interface IncidentRepository extends JpaRepository<Incident, Long>, JpaSp
     long countByRefNumberAndDuplicateSeqNotNull(Long refNumber);
     List<Incident> findByRefNumberIsNullOrderByIdAsc();
     Optional<Incident> findFirstByReporterIdAndTitleAndDescriptionAndCreatedAtAfter(Long reporterId, String title, String description, Instant since);
+    // Open deadlines that have not passed yet (checked for the early SLA warning).
+    List<Incident> findByAcknowledgedAtIsNullAndResponseViolatedFalseAndResponseDeadlineAfter(Instant now);
+    List<Incident> findByResolvedAtIsNullAndResolutionViolatedFalseAndResolutionDeadlineAfter(Instant now);
     List<Incident> findByAcknowledgedAtIsNullAndPriorityInAndStatusIn(Collection<Priority> priorities, Collection<IncidentStatus> statuses);
 }

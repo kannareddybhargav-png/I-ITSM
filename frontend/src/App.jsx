@@ -10,6 +10,23 @@ const URGENCY = [
   { v: 4, t: 'High', d: "I can't do an important part of my work." },
   { v: 5, t: 'Critical', d: 'Work has stopped and it needs fixing now.' },
 ];
+const AFFECTED = [
+  { v: 1, t: 'Just me' },
+  { v: 5, t: 'A few people (2-9)' },
+  { v: 25, t: 'A team (10-99)' },
+  { v: 100, t: 'A department or more (100+)' },
+];
+const affectedLabel = (n) => (n >= 100 ? `${n}+ people (department or more)` : n >= 10 ? `${n} people (a team)` : n > 1 ? `${n} people` : 'Just the reporter');
+/** Matches the server's early warning: 80% of an SLA window used and the deadline not passed yet. */
+const SLA_WARNING_PERCENT = 80;
+const windowAtRisk = (start, deadline, now = Date.now()) => {
+  if (!start || !deadline) return false;
+  const s = new Date(start).getTime(), d = new Date(deadline).getTime();
+  return d > now && d > s && (now - s) * 100 >= (d - s) * SLA_WARNING_PERCENT;
+};
+const OPEN_ST = ['NEW', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED', 'ACKNOWLEDGED', 'IN_PROGRESS'];
+const slaAtRisk = (i, now = Date.now()) => OPEN_ST.includes(i.status) && !i.responseViolated && !i.resolutionViolated
+  && ((!i.acknowledgedAt && windowAtRisk(i.createdAt, i.responseDeadline, now)) || (!i.resolvedAt && windowAtRisk(i.createdAt, i.resolutionDeadline, now)));
 const fmt = (t) => (t ? new Date(t).toLocaleString() : '-');
 /** 45m, 3h 05m, or 1d 6h 30m once it is a day or more. */
 const duration = (ms) => {
@@ -64,7 +81,7 @@ const Icon = ({ name, size = 18 }) => (
 const Priority = ({ p }) => (p ? <span className={`chip ${p}`}>{p}</span> : <span className="muted">-</span>);
 const Status = ({ s }) => <span className={`pill ${tone(s)}`}>{label(s)}</span>;
 
-function Countdown({ deadline, stopped, violated, doneAt, doneLabel }) {
+function Countdown({ deadline, stopped, violated, doneAt, doneLabel, start }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -82,8 +99,10 @@ function Countdown({ deadline, stopped, violated, doneAt, doneLabel }) {
   const ms = new Date(deadline) - now;
   if (ms < 0) return <b className="bad">Overdue {duration(-ms)}</b>;
   const s = Math.floor(ms / 1000);
-  if (ms >= 86400000) return <b className="ok">{duration(ms)}</b>;
-  return <b className={ms < 300000 ? 'warn' : 'ok'}>{Math.floor(s / 3600)}h {Math.floor((s % 3600) / 60)}m {s % 60}s</b>;
+  const risk = windowAtRisk(start, deadline, now);
+  const riskTag = risk ? <small className="warn">At risk: {SLA_WARNING_PERCENT}% of the time used</small> : null;
+  if (ms >= 86400000) return <><b className={risk ? 'warn' : 'ok'}>{duration(ms)}</b>{riskTag}</>;
+  return <><b className={risk || ms < 300000 ? 'warn' : 'ok'}>{Math.floor(s / 3600)}h {Math.floor((s % 3600) / 60)}m {s % 60}s</b>{riskTag}</>;
 }
 
 /* ---------------- sign in ---------------- */
@@ -190,7 +209,7 @@ function Login({ onAuth }) {
 
 /* ---------------- report incident ---------------- */
 function ReportForm({ meta, onDone }) {
-  const [f, setF] = useState({ title: '', description: '', categoryId: '', serviceId: '', urgency: 3 });
+  const [f, setF] = useState({ title: '', description: '', categoryId: '', serviceId: '', urgency: 3, affectedUsers: 1 });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -200,7 +219,7 @@ function ReportForm({ meta, onDone }) {
     setBusy(true);
     setErr('');
     try {
-      const i = await api('/api/incidents', { method: 'POST', body: { ...f, categoryId: +f.categoryId, serviceId: +f.serviceId, urgency: +f.urgency } });
+      const i = await api('/api/incidents', { method: 'POST', body: { ...f, categoryId: +f.categoryId, serviceId: +f.serviceId, urgency: +f.urgency, affectedUsers: +f.affectedUsers } });
       onDone(i.id);
     } catch (x) { setErr(x.message); setBusy(false); }
   };
@@ -214,6 +233,7 @@ function ReportForm({ meta, onDone }) {
         <div className="row">
           <label>Category<select required value={f.categoryId} onChange={set('categoryId')}><option value="">Choose a category</option>{meta.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
           <label>Affected IT service<select required value={f.serviceId} onChange={set('serviceId')}><option value="">Choose a service</option>{meta.services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label>Who is affected?<select value={f.affectedUsers} onChange={set('affectedUsers')}>{AFFECTED.map((a) => <option key={a.v} value={a.v}>{a.t}</option>)}</select></label>
         </div>
         <fieldset className="urgency" style={{ display: 'block' }}>
           <div className="legend">How urgent is it for you?</div>
@@ -249,6 +269,7 @@ function Stats({ version, scope }) {
     ['Resolved incidents', all.filter((i) => DONE_STATUSES.includes(i.status)).length, false],
     ['Critical open (P1 and P2)', open.filter((i) => ['P1', 'P2'].includes(i.priority)).length, true],
     ['SLA breached', all.filter((i) => i.responseViolated || i.resolutionViolated).length, true],
+    ['SLA at risk', all.filter((i) => slaAtRisk(i)).length, true],
     ['Escalated open', open.filter((i) => i.escalationLevel > 0).length, true],
   ];
   return <div className="stats">{tiles.map(([t, n, hot]) => <div key={t} className={'stat' + (hot && n > 0 ? ' hot' : '')}><span>{t}</span><b>{n}</b></div>)}</div>;
@@ -366,12 +387,12 @@ function Detail({ id, user, onBack, onChanged, onOpen, version, backLabel }) {
   const thread = hist.filter((h) => h.action === 'INFO_REQUESTED' || h.action === 'INFO_PROVIDED');
   const lastInfo = thread.length ? thread[thread.length - 1] : null;
   const waitingForReply = lastInfo && lastInfo.action === 'INFO_REQUESTED';
-  const startEdit = () => { setEdit({ title: i.title, description: i.description, urgency: i.urgency || 3 }); setEditing(true); };
+  const startEdit = () => { setEdit({ title: i.title, description: i.description, urgency: i.urgency || 3, affectedUsers: i.affectedUsers || 1 }); setEditing(true); };
   const saveEdit = async (e) => {
     e.preventDefault();
     if (busy.current) return;
     busy.current = true;
-    try { setErr(''); await api('/api/incidents/' + id, { method: 'PUT', body: { ...edit, urgency: +edit.urgency } }); setEditing(false); await load(); onChanged(); }
+    try { setErr(''); await api('/api/incidents/' + id, { method: 'PUT', body: { ...edit, urgency: +edit.urgency, affectedUsers: +edit.affectedUsers } }); setEditing(false); await load(); onChanged(); }
     catch (x) { setErr(x.message); }
     finally { busy.current = false; }
   };
@@ -413,14 +434,15 @@ function Detail({ id, user, onBack, onChanged, onOpen, version, backLabel }) {
 
       {i.duplicateOfId && <div className="banner info">This looks like a duplicate of open incident {i.duplicateOfReference || 'reported earlier'}. It has been linked so the team can handle both together.</div>}
       {i.escalationLevel > 0 && <div className="banner warn">Escalated (level {i.escalationLevel}) because it was not acknowledged in time.</div>}
+      {slaAtRisk(i) && <div className="banner warn">SLA at risk: {SLA_WARNING_PERCENT}% of the allowed time is used. Administrators and the technician have been warned.</div>}
       {err && <div className="error">{err}</div>}
 
       <div className={'detail-top' + (showRelated ? '' : ' no-rel')}>
         <div className="card">
           <h3>SLA overview</h3>
           <div className="sla-grid">
-            <div className="sla-box"><span>Response SLA</span><Countdown deadline={i.responseDeadline} stopped={!!i.acknowledgedAt} violated={i.responseViolated} doneAt={i.acknowledgedAt} doneLabel="Acknowledged" /></div>
-            <div className="sla-box"><span>Resolution SLA</span><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} doneAt={i.resolvedAt} doneLabel="Resolved" /></div>
+            <div className="sla-box"><span>Response SLA</span><Countdown deadline={i.responseDeadline} stopped={!!i.acknowledgedAt} violated={i.responseViolated} doneAt={i.acknowledgedAt} doneLabel="Acknowledged" start={i.createdAt} /></div>
+            <div className="sla-box"><span>Resolution SLA</span><Countdown deadline={i.resolutionDeadline} stopped={!!i.resolvedAt} violated={i.resolutionViolated} doneAt={i.resolvedAt} doneLabel="Resolved" start={i.createdAt} /></div>
           </div>
         </div>
 
@@ -451,6 +473,7 @@ function Detail({ id, user, onBack, onChanged, onOpen, version, backLabel }) {
               <dt>Category</dt><dd>{i.category}</dd>
               <dt>IT service</dt><dd>{i.service}</dd>
               {i.urgency ? <><dt>Urgency</dt><dd>{i.urgency} - {URGENCY.find((u) => u.v === i.urgency)?.t}</dd></> : null}
+              <dt>Affected users</dt><dd>{affectedLabel(i.affectedUsers || 1)}</dd>
               <dt>Reported by</dt><dd>{i.reporter}</dd>
               <dt>Reported on</dt><dd>{fmt(i.createdAt)}</dd>
               <dt>Technician</dt><dd>{i.technician || <span className="muted">Not assigned yet</span>}</dd>
@@ -466,6 +489,7 @@ function Detail({ id, user, onBack, onChanged, onOpen, version, backLabel }) {
                 <label>Title<input required maxLength={200} value={edit.title} onChange={(e) => setEdit({ ...edit, title: e.target.value })} /></label>
                 <label>Description<textarea required maxLength={2000} value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></label>
                 <label>Urgency<select value={edit.urgency} onChange={(e) => setEdit({ ...edit, urgency: e.target.value })}>{URGENCY.map((u) => <option key={u.v} value={u.v}>{u.v} - {u.t}: {u.d}</option>)}</select></label>
+                <label>Who is affected?<select value={edit.affectedUsers} onChange={(e) => setEdit({ ...edit, affectedUsers: e.target.value })}>{[...new Set([...AFFECTED.map((a) => a.v), +edit.affectedUsers])].sort((a, b) => a - b).map((v) => <option key={v} value={v}>{AFFECTED.find((a) => a.v === v)?.t || affectedLabel(v)}</option>)}</select></label>
                 <p className="hint" style={{ margin: 0 }}>The priority and SLA deadlines are recalculated when you save.</p>
                 <div className="actions" style={{ marginTop: 0 }}><button className="btn">Save changes</button><button type="button" className="btn alt" onClick={() => setEditing(false)}>Cancel</button></div>
               </form>
@@ -627,8 +651,8 @@ function RatingCard({ version }) {
 
 const AUDIT_ACTIONS = ['CREATED', 'CLASSIFIED', 'PRIORITIZED', 'ASSIGNED', 'REASSIGNED', 'ACKNOWLEDGED', 'INVESTIGATION_STARTED', 'NOTE_ADDED',
   'INFO_REQUESTED', 'INFO_PROVIDED', 'UPDATED', 'PRIORITY_CHANGED', 'RESOLVED', 'VERIFIED', 'REOPENED', 'CLOSED', 'DUPLICATE_DETECTED',
-  'ESCALATED_L1', 'ESCALATED_L2', 'SLA_RESPONSE_VIOLATION', 'SLA_RESOLUTION_VIOLATION', 'DELETED'];
-const actionTone = (a) => (/ESCALATED|VIOLATION|DUPLICATE|DELETED/.test(a) ? 'warnpill' : /RESOLVED|VERIFIED|CLOSED/.test(a) ? 'done' : /NOTE|INFO/.test(a) ? 'wait' : 'active');
+  'ESCALATED_L1', 'ESCALATED_L2', 'SLA_RESPONSE_WARNING', 'SLA_RESOLUTION_WARNING', 'SLA_RESPONSE_VIOLATION', 'SLA_RESOLUTION_VIOLATION', 'DELETED'];
+const actionTone = (a) => (/ESCALATED|VIOLATION|WARNING|DUPLICATE|DELETED/.test(a) ? 'warnpill' : /RESOLVED|VERIFIED|CLOSED/.test(a) ? 'done' : /NOTE|INFO/.test(a) ? 'wait' : 'active');
 
 function AuditLogView({ onOpenIncident, version }) {
   const [f, setF] = useState({ action: '', actor: '', incident: '', from: '', to: '' });
@@ -692,6 +716,76 @@ function AuditLogView({ onOpenIncident, version }) {
         <button className="btn alt small" disabled={page + 1 >= data.totalPages} onClick={() => setPage(page + 1)}>Next</button>
       </div>
     </div>
+  );
+}
+
+
+/* ---------------- reports ---------------- */
+const pct = (a, b) => (b > 0 ? Math.round((a * 100) / b) : 0);
+function BreakdownTable({ title, sub, rows, first, file }) {
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  const exportCsv = () => {
+    const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    const lines = [[first, 'Total', 'Open', 'P1/P2', 'SLA breached', 'At risk', 'Resolved'], ...rows.map((r) => [r.name, r.total, r.open, r.critical, r.breached, r.atRisk, r.resolved])];
+    const url = URL.createObjectURL(new Blob([lines.map((l) => l.map(esc).join(',')).join('\n')], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = file; a.click(); URL.revokeObjectURL(url);
+  };
+  return (
+    <div className="card">
+      <div className="report-head"><div><h3>{title}</h3>{sub && <p className="sub">{sub}</p>}</div><button className="btn alt small" onClick={exportCsv}>Export CSV</button></div>
+      <div className="table-wrap"><table>
+        <thead><tr><th>{first}</th><th style={{ width: '32%' }}>Incidents</th><th>Open</th><th>P1/P2</th><th>SLA breached</th><th>At risk</th><th>Resolved</th></tr></thead>
+        <tbody>{rows.map((r) => (
+          <tr key={r.name}><td>{first === 'Priority' ? <Priority p={r.name} /> : r.name}</td>
+            <td><div className="hbar"><i style={{ width: pct(r.total, max) + '%' }} /><span>{r.total}</span></div></td>
+            <td>{r.open}</td><td>{r.critical}</td><td className={r.breached ? 'bad' : ''}>{r.breached}</td><td className={r.atRisk ? 'warn' : ''}>{r.atRisk}</td><td>{r.resolved}</td></tr>
+        ))}{rows.length === 0 && <tr><td colSpan={7} className="muted">No data yet.</td></tr>}</tbody></table></div>
+    </div>
+  );
+}
+function ReportsView({ version }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => { api('/api/reports/summary').then((x) => { setErr(''); setD(x); }).catch((e) => setErr(e.message)); }, [version]);
+  if (err) return <div className="error">{err}</div>;
+  if (!d) return <p className="muted">Loading reports…</p>;
+  const o = d.overview;
+  const tiles = [
+    ['Total incidents', o.total, false], ['Open incidents', o.open, false], ['Critical open (P1 and P2)', o.criticalOpen, true],
+    ['Resolved incidents', o.resolved, false], ['SLA violations', o.breached, true], [`SLA at risk (${d.warningPercent}%+ used)`, o.atRisk, true],
+    ['Escalated open', o.escalatedOpen, true], ['Linked duplicates', o.duplicates, false],
+    ['SLA compliance (resolved)', o.slaCompliancePercent == null ? '-' : o.slaCompliancePercent + '%', false],
+    ['Average time to resolve', o.avgResolutionHours == null ? '-' : o.avgResolutionHours + ' h', false],
+  ];
+  const statusTotal = Object.values(d.byStatus).reduce((a, b) => a + b, 0);
+  return (
+    <>
+      <p className="hint" style={{ marginTop: 0 }}>Generated {fmt(d.generatedAt)}. Numbers update whenever incidents change.</p>
+      <h3 className="report-title">Incident overview</h3>
+      <div className="stats">{tiles.map(([t, n, hot]) => <div key={t} className={'stat' + (hot && n > 0 ? ' hot' : '')}><span>{t}</span><b>{n}</b></div>)}</div>
+      <BreakdownTable title="Service analysis" sub="Incidents per IT service, most affected first." rows={d.byService} first="Service" file="service-analysis.csv" />
+      <BreakdownTable title="Category analysis" sub="Incidents per category." rows={d.byCategory} first="Category" file="category-analysis.csv" />
+      <BreakdownTable title="Priority distribution" rows={d.byPriority} first="Priority" file="priority-distribution.csv" />
+      <div className="card">
+        <h3>Status breakdown</h3>
+        <div className="statusbar">{Object.entries(d.byStatus).filter(([, n]) => n > 0).map(([s, n]) => (
+          <span key={s} className={'seg ' + tone(s)} style={{ flex: n }} title={`${label(s)}: ${n}`}>{pct(n, statusTotal) >= 8 ? label(s) : ''}</span>
+        ))}{statusTotal === 0 && <span className="muted">No incidents yet.</span>}</div>
+        <div className="legend-row">{Object.entries(d.byStatus).map(([s, n]) => <span key={s}><Status s={s} /> {n}</span>)}</div>
+      </div>
+      <div className="card">
+        <h3>Technician workload</h3>
+        <p className="sub">Active = assigned, acknowledged or in progress right now.</p>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Technician</th><th style={{ width: '30%' }}>Active incidents</th><th>Handled in total</th><th>SLA breaches</th><th>Rating</th><th>Availability</th></tr></thead>
+          <tbody>{d.technicians.map((t) => {
+            const max = Math.max(1, ...d.technicians.map((x) => x.active));
+            return (<tr key={t.id}><td>{t.name}</td><td><div className="hbar"><i style={{ width: pct(t.active, max) + '%' }} /><span>{t.active}</span></div></td>
+              <td>{t.handled}</td><td className={t.breached ? 'bad' : ''}>{t.breached}</td><td>{t.rating.toFixed(2)} / 5 <span className="muted">({t.reviews})</span></td>
+              <td>{t.available ? <span className="ok">Available</span> : <span className="muted">Unavailable</span>}</td></tr>);
+          })}{d.technicians.length === 0 && <tr><td colSpan={6} className="muted">No technicians yet.</td></tr>}</tbody></table></div>
+      </div>
+    </>
   );
 }
 
@@ -872,12 +966,15 @@ function AdminTools({ meta, onMetaChange, version, onOpenIncident }) {
         <button className={section === 'settings' ? 'on' : ''} onClick={() => goSection('settings')}>Settings</button>
         <button className={section === 'people' ? 'on' : ''} onClick={() => goSection('people')}>People {pending.length > 0 && <span className="count alert">{pending.length} to verify</span>}</button>
         <button className={section === 'monitoring' ? 'on' : ''} onClick={() => goSection('monitoring')}>Monitoring</button>
+        <button className={section === 'reports' ? 'on' : ''} onClick={() => goSection('reports')}>Reports</button>
         <button className={section === 'audit' ? 'on' : ''} onClick={() => goSection('audit')}>Audit log</button>
       </div>
       {err && <div className="error">{err}</div>}
       {note && <div className="banner info" style={{ marginTop: 0 }}>{note}</div>}
 
       {section === 'audit' && <AuditLogView onOpenIncident={onOpenIncident} version={version} />}
+
+      {section === 'reports' && <ReportsView version={version} />}
 
       {section === 'settings' && !panel && <TileGrid tiles={settingTiles} onPick={goPanel} />}
 
@@ -916,7 +1013,7 @@ function AdminTools({ meta, onMetaChange, version, onOpenIncident }) {
           {settingsBack}
           <div className="card">
             <h3>Technician assignment strategy</h3>
-            <p className="sub">Skill based picks a matching technician with the lowest workload. Load based picks the least busy available technician.</p>
+            <p className="sub">Skill based picks a matching technician with the lowest workload. Load based picks the least busy available technician. Your choice is saved and kept after a server restart.</p>
             <select style={{ maxWidth: 280 }} value={strategy.active} onChange={(e) => run(async () => setStrategy(await api('/api/config/assignment-strategy', { method: 'PUT', body: { strategy: e.target.value } })), 'Assignment strategy saved.')}>
               {strategy.options.map((o) => <option key={o} value={o}>{label(o)}</option>)}
             </select>
